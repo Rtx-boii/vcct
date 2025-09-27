@@ -1,0 +1,50 @@
+version: "3.9"
+
+services:
+  dhcp-server:
+    image: dhcp-server
+    container_name: dhcp-server
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+    environment:
+      - DHCP_INTERFACE=ens37
+    volumes:
+      - /home/it22093264/vcct-assignment/dhcp-server/dhcpd.conf:/etc/dhcp/dhcpd.conf:ro
+      - /home/it22093264/vcct-assignment/dhcp-server/dhcpd-data:/var/lib/dhcpd
+    restart: unless-stopped
+
+  dns-server:
+    image: dns-server
+    container_name: dns-server-11
+    depends_on:
+      - dhcp-server
+    ports:
+      - "192.168.8.20:53:53/udp"
+      - "192.168.8.20:53:53/tcp"
+    volumes:
+      - /home/it22093264/vcct-assignment/dns-server/named2.conf:/etc/named.conf:ro
+      - /home/it22093264/vcct-assignment/dns-server/forward.vcct.com:/var/named/forward.vcct.com:ro
+      - /home/it22093264/vcct-assignment/dns-server/reverse.vcct.com:/var/named/reverse.vcct.com:ro
+      - /home/it22093264/vcct-assignment/dns-server/logs:/var/log/named
+    restart: unless-stopped
+
+  squid-proxy:
+    image: my-squid-proxy
+    container_name: squid-proxy-4
+    depends_on:
+      - dhcp-server
+    ports:
+      - "3128:3128"
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 512M
+    volumes:
+      - /home/it22093264/vcct-assignment/squid-proxy/logs:/var/log/squid
+      - /home/it22093264/vcct-assignment/squid-proxy/squid.conf:/etc/squid/squid.conf:ro
+      - /home/it22093264/vcct-assignment/squid-proxy/banned-keywords:/etc/squid/banned-keywords:ro
+      - /home/it22093264/vcct-assignment/squid-proxy/blocked-filextensions:/etc/squid/blocked-filextensions:ro
+      - /home/it22093264/vcct-assignment/squid-proxy/blocked-sites:/etc/squid/blocked-sites:ro
+    restart: unless-stopped

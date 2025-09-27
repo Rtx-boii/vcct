@@ -1,0 +1,50 @@
+2025/09/27 06:13:27| Processing Configuration File: /etc/squid/squid.conf (depth 0)
+2025/09/27 06:13:27| WARNING: empty ACL: acl blocked_sites dstdomain "/etc/squid/blocked-sites"
+2025/09/27 06:13:27| WARNING: empty ACL: acl blockfiles urlpath_regex -i "/etc/squid/blocked-filextensions"
+2025/09/27 06:13:27| Created PID file (/var/run/squid.pid)
+2025/09/27 06:13:27| Set Current Directory to /var/spool/squid
+2025/09/27 06:13:27| Starting Squid Cache version 6.12 for x86_64-alpine-linux-musl...
+2025/09/27 06:13:27| Service Name: squid
+2025/09/27 06:13:27| Process ID 1
+2025/09/27 06:13:27| Process Roles: master worker
+2025/09/27 06:13:27| With 1048576 file descriptors available
+2025/09/27 06:13:27| Initializing IP Cache...
+2025/09/27 06:13:27| DNS IPv6 socket created at [::], FD 8
+2025/09/27 06:13:27| DNS IPv4 socket created at 0.0.0.0, FD 9
+2025/09/27 06:13:27| Adding nameserver 192.168.21.2 from /etc/resolv.conf
+2025/09/27 06:13:27| Adding domain localdomain from /etc/resolv.conf
+2025/09/27 06:13:27| Logfile: opening log daemon:/var/log/squid/access.log
+2025/09/27 06:13:27| Logfile Daemon: opening log /var/log/squid/access.log
+2025/09/27 06:13:28| Unlinkd pipe opened on FD 15
+2025/09/27 06:13:28| Local cache digest enabled; rebuild/rewrite every 3600/3600 sec
+2025/09/27 06:13:28| Store logging disabled
+2025/09/27 06:13:28| Swap maxSize 102400 + 262144 KB, estimated 28041 objects
+2025/09/27 06:13:28| Target number of buckets: 1402
+2025/09/27 06:13:28| Using 8192 Store buckets
+2025/09/27 06:13:28| Max Mem  size: 262144 KB
+2025/09/27 06:13:28| Max Swap size: 102400 KB
+2025/09/27 06:13:28| Rebuilding storage in /var/spool/squid (no log)
+2025/09/27 06:13:28| Using Least Load store dir selection
+2025/09/27 06:13:28| Set Current Directory to /var/spool/squid
+2025/09/27 06:13:28| Finished loading MIME types and icons.
+2025/09/27 06:13:28| HTCP Disabled.
+2025/09/27 06:13:28| Squid plugin modules loaded: 0
+2025/09/27 06:13:28| Adaptation support is off.
+2025/09/27 06:13:28| Accepting HTTP Socket connections at conn3 local=[::]:3128 remote=[::] FD 17 flags=9
+    listening port: 3128
+2025/09/27 06:13:28| Done scanning /var/spool/squid dir (0 entries)
+2025/09/27 06:13:28| Finished rebuilding storage from disk.
+          0 Entries scanned
+          0 Invalid entries
+          0 With invalid flags
+          0 Objects loaded
+          0 Objects expired
+          0 Objects canceled
+          0 Duplicate URLs purged
+          0 Swapfile clashes avoided
+    Took 0.11 seconds (0.00 objects/sec).
+2025/09/27 06:13:28| Beginning Validation Procedure
+2025/09/27 06:13:28| Completed Validation Procedure
+    Validated 0 Entries
+    store_swap_size = 0.00 KB
+2025/09/27 06:13:29| storeLateRelease: released 0 objects

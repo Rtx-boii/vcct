@@ -20,8 +20,8 @@ services:
     depends_on:
       - dhcp-server
     ports:
-      - "192.168.8.20:53:53/udp"
-      - "192.168.8.20:53:53/tcp"
+      - "53:53/udp"
+      - "53:53/tcp"
     volumes:
       - ./dns-server/named.conf:/etc/named.conf:ro
       - ./dns-server/forward.vcct.com:/var/named/forward.vcct.com:ro

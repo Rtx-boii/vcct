@@ -1,0 +1,3 @@
+dhcp-server: 1
+dns-server: 1
+squid-proxy: 1

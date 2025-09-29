@@ -30,7 +30,7 @@ services:
     restart: unless-stopped
 
   squid-proxy:
-    image: squid-proxy
+    image: nilessh/squid-proxy:${SQUID_PROXY_VERSION}
     container_name: squid-proxy-4
     depends_on:
       - dhcp-server

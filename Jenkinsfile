@@ -8,7 +8,7 @@ pipeline {
     }
 
     triggers {
-        // Only health check runs on this cron
+        // Health check every 10 minutes
         cron('H/10 * * * *')
     }
 
@@ -18,7 +18,7 @@ pipeline {
                 checkout([$class: 'GitSCM',
                     branches: [[name: '*/vcct-setup']],
                     doGenerateSubmoduleConfigurations: false,
-                    extensions: [],
+                    extensions: [[$class: 'CloneOption', shallow: true, depth: 2]],
                     userRemoteConfigs: [[
                         credentialsId: 'github-creds',
                         url: 'https://github.com/Rtx-boii/vcct.git'
@@ -33,9 +33,9 @@ pipeline {
                 script {
                     def SERVICES = ['dhcp-server', 'dns-server', 'squid-proxy']
 
-                    // Get changed files between last two commits
+                    // Get changed files between last two commits (safe for first run)
                     def CHANGED_FILES = sh(
-                        script: "git diff-tree --no-commit-id --name-only -r HEAD~1 HEAD",
+                        script: "git diff-tree --no-commit-id --name-only -r HEAD~1 HEAD || true",
                         returnStdout: true
                     ).trim().split("\n")
                     echo "Changed files: ${CHANGED_FILES}"
@@ -44,7 +44,7 @@ pipeline {
                     def RESTART_SERVICES = []
 
                     SERVICES.each { svc ->
-                        def dockerfileChanged = CHANGED_FILES.any { it.startsWith("${svc}/Dockerfile") }
+                        def dockerfileChanged = CHANGED_FILES.any { it == "${svc}/Dockerfile" }
                         def entrypointChanged = CHANGED_FILES.any {
                             it.startsWith("${svc}/entrypoint") || it.startsWith("${svc}/start-squid.sh")
                         }
@@ -77,17 +77,27 @@ pipeline {
                         . \$WORKSPACE/versions.env
                     """
 
+                    // Docker login
+                    sh "echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin"
+
                     def buildServices = readFile('build-services.txt').trim().split("\n")
                     buildServices.each { svc ->
                         def versionVar = svc.toUpperCase().replace('-', '_') + "_VERSION"
-                        def version = sh(script: "echo \$$versionVar", returnStdout: true).trim()
-                        version = version == "" ? "1" : version
-                        version = version.toInteger() + 1
+                        def version = sh(script: "grep -E '^${versionVar}=' \$WORKSPACE/versions.env | cut -d '=' -f2", returnStdout: true).trim()
+
+                        if (version.isInteger()) {
+                            version = version.toInteger() + 1
+                        } else {
+                            version = 1
+                        }
+
                         sh "docker build -t ${DOCKER_USER}/${svc}:${version} ./${svc}"
                         sh "docker push ${DOCKER_USER}/${svc}:${version}"
-                        // Update env file for next use
-                        sh "sed -i '/${versionVar}/d' \$WORKSPACE/versions.env || true"
-                        sh "echo ${versionVar}=${version} >> \$WORKSPACE/versions.env"
+
+                        // Update env file
+                        sh "grep -v '^${versionVar}=' \$WORKSPACE/versions.env > \$WORKSPACE/versions.env.tmp || true"
+                        sh "echo ${versionVar}=${version} >> \$WORKSPACE/versions.env.tmp"
+                        sh "mv \$WORKSPACE/versions.env.tmp \$WORKSPACE/versions.env"
                     }
                 }
             }
@@ -104,11 +114,14 @@ pipeline {
 
                     def restartServices = fileExists('restart-services.txt') ? readFile('restart-services.txt').trim().split("\n") : []
                     def buildServices = fileExists('build-services.txt') ? readFile('build-services.txt').trim().split("\n") : []
+                    def deployServices = (restartServices + buildServices).findAll { it?.trim() }.unique()
 
-                    def deployServices = (restartServices + buildServices).unique()
-
-                    deployServices.each { svc ->
-                        sh "docker compose up -d --no-deps --force-recreate ${svc}"
+                    if (deployServices) {
+                        deployServices.each { svc ->
+                            sh "docker compose up -d --no-deps --force-recreate ${svc}"
+                        }
+                    } else {
+                        echo "No services to deploy."
                     }
                 }
             }
@@ -118,21 +131,25 @@ pipeline {
             when { not { triggeredBy 'TimerTrigger' } }
             steps {
                 script {
-                    def versionsMap = [:]
-                    def content = readFile('versions.env').trim().split("\n")
-                    content.each { line ->
-                        def parts = line.split('=')
-                        versionsMap[parts[0]] = parts[1]
-                    }
-                    writeYaml file: 'versions.yml', data: versionsMap
+                    if (fileExists('versions.env')) {
+                        def versionsMap = [:]
+                        def content = readFile('versions.env').trim().split("\n")
+                        content.each { line ->
+                            def parts = line.split('=')
+                            if (parts.size() == 2) {
+                                versionsMap[parts[0]] = parts[1]
+                            }
+                        }
+                        writeYaml file: 'versions.yml', data: versionsMap
 
-                    sh """
-                        git config user.email "jenkins@vcct.com"
-                        git config user.name "Jenkins"
-                        git add versions.yml
-                        git commit -m "Update versions.yml by pipeline" || true
-                        git push origin vcct-setup || true
-                    """
+                        sh """
+                            git config user.email "jenkins@vcct.com"
+                            git config user.name "Jenkins"
+                            git add versions.yml
+                            git commit -m "Update versions.yml by pipeline" || echo "No changes to commit"
+                            git push origin vcct-setup
+                        """
+                    }
                 }
             }
         }
@@ -141,9 +158,8 @@ pipeline {
             when { triggeredBy 'TimerTrigger' }
             steps {
                 script {
-                    // Here you can run your health check commands
                     sh "docker ps -a"
-                    sh "docker inspect dhcp-server dns-server squid-proxy"
+                    sh "docker compose ps"
                 }
             }
         }
@@ -151,7 +167,8 @@ pipeline {
 
     post {
         always {
-            sh "rm -f build-services.txt restart-services.txt versions.env"
+            sh "rm -f build-services.txt restart-services.txt"
+            archiveArtifacts artifacts: 'versions.env', onlyIfSuccessful: true
         }
         failure {
             echo "Pipeline failed. Rollback or manual intervention may be required."

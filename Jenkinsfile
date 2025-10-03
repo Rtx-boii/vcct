@@ -34,14 +34,20 @@ pipeline {
                 script {
                     def changedFiles = sh(script: "git diff --name-only ${GIT_PREVIOUS_COMMIT} ${env.GIT_COMMIT} || true", returnStdout: true).trim().split("\n")
                     echo "Changed files since last successful build: ${changedFiles}"
+                    echo "DEBUG: GIT_PREVIOUS_COMMIT=${GIT_PREVIOUS_COMMIT}, GIT_COMMIT=${env.GIT_COMMIT}"
+                    echo "DEBUG: Raw diff: ${sh(script: 'git diff --name-only ${GIT_PREVIOUS_COMMIT} ${env.GIT_COMMIT}', returnStdout: true)}"
+                    echo "DEBUG: Changed files list: ${changedFiles.join(', ')}"
                     
                     def servicesToBuild = []; def servicesToRestart = []; def allServices = ['dhcp-server', 'dns-server', 'squid-proxy']; def versions = readYaml file: 'versions.yml'
                     
                     if (!changedFiles.any { it == 'docker-compose.yml' || it == 'versions.yml' }) {
                         allServices.each { service ->
-                            if (changedFiles.any { it.startsWith("${service}/Dockerfile") || it.startsWith("${service}/entrypoint.sh") || it.startsWith("${service}/startup.sh") }) {
+                            def hasBuildFile = changedFiles.any { it.startsWith("${service}/Dockerfile") || it.startsWith("${service}/entrypoint.sh") || it.startsWith("${service}/startup.sh") }
+                            def hasOtherFile = changedFiles.any { it.startsWith("${service}/") }
+                            echo "DEBUG: For ${service} - Build trigger: ${hasBuildFile}, Restart trigger: ${hasOtherFile}"
+                            if (hasBuildFile) {
                                 servicesToBuild << service; def currentVersion = versions.get(service, 0) as int; versions[service] = currentVersion + 1
-                            } else if (changedFiles.any { it.startsWith("${service}/") }) {
+                            } else if (hasOtherFile) {
                                 servicesToRestart << service
                             }
                         }

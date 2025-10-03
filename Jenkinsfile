@@ -6,7 +6,7 @@ pipeline {
         DOCKER_PASS  = credentials('docker-hub-creds')
         GITHUB_CREDS = credentials('github-creds')
         REPO_URL     = 'https://github.com/Rtx-boii/vcct.git'
-        ALL_SERVICES = ['dhcp-server', 'dns-server', 'squid-proxy']
+        ALL_SERVICES = "dhcp-server,dns-server,squid-proxy" // comma-separated string
     }
 
     triggers {
@@ -29,6 +29,8 @@ pipeline {
         stage('Detect Changes & Prepare Services') {
             steps {
                 script {
+                    def servicesList = env.ALL_SERVICES.split(',')
+
                     // Use last successful commit or previous commit for diff
                     def lastCommit = env.GIT_PREVIOUS_SUCCESSFUL_COMMIT ?: sh(script: "git rev-parse HEAD~1", returnStdout: true).trim()
                     def changedFiles = sh(script: "git diff --name-only ${lastCommit} HEAD || true", returnStdout: true).trim().split("\n")
@@ -40,9 +42,9 @@ pipeline {
 
                     if (changedFiles.any { it == 'docker-compose.yml' || it == 'versions.yml' }) {
                         echo "Full blueprint change detected. All services will be recreated."
-                        servicesToBuild = env.ALL_SERVICES
+                        servicesToBuild = servicesList
                     } else {
-                        env.ALL_SERVICES.each { service ->
+                        servicesList.each { service ->
                             def hasDockerChange = changedFiles.any { it.startsWith("${service}/Dockerfile") || it.startsWith("${service}/entrypoint.sh") || it.startsWith("${service}/startup.sh") }
                             def hasConfigChange = changedFiles.any { it.startsWith("${service}/") }
 
@@ -98,10 +100,11 @@ pipeline {
         stage('Deploy / Restart Services') {
             steps {
                 script {
+                    def servicesList = env.ALL_SERVICES.split(',')
                     def servicesToBuild = readFile("build-services.txt").trim().split("\n").findAll { it }
                     def servicesToRestart = readFile("restart-services.txt").trim().split("\n").findAll { it }
 
-                    if (servicesToBuild.empty && servicesToRestart.empty && changedFiles.any { it == 'docker-compose.yml' || it == 'versions.yml' }) {
+                    if (servicesToBuild.empty && servicesToRestart.empty && sh(script: "git diff --name-only HEAD~1 HEAD", returnStdout: true).trim().any { it == 'docker-compose.yml' || it == 'versions.yml' }) {
                         echo "Full docker-compose reset due to blueprint change."
                         sh "docker compose down"
                         sh "set -a; . ${env.WORKSPACE}/versions.env; set +a; docker compose up -d"
@@ -122,8 +125,9 @@ pipeline {
         stage('Post-Deployment Health Check') {
             steps {
                 script {
+                    def servicesList = env.ALL_SERVICES.split(',')
                     def servicesToCheck = readFile("build-services.txt").trim().split("\n").findAll { it }
-                    if (!servicesToCheck) { servicesToCheck = env.ALL_SERVICES }
+                    if (!servicesToCheck) { servicesToCheck = servicesList }
                     servicesToCheck.each { service ->
                         echo "Waiting 20s for ${service} to initialize..."
                         sleep 20
@@ -166,6 +170,7 @@ pipeline {
         failure {
             script {
                 echo "Failure detected, rolling back services..."
+                def servicesList = env.ALL_SERVICES.split(',')
                 def currentVersions = readYaml(file: 'versions.yml')
                 def oldVersionsContent = sh(script: "git show HEAD~1:versions.yml", returnStdout: true).trim()
                 def oldVersions = readYaml(text: oldVersionsContent)

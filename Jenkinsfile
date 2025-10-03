@@ -12,6 +12,7 @@ pipeline {
         cron('H/10 * * * *')
     }
 
+    
     stages {
         stage('Checkout SCM') {
             steps {

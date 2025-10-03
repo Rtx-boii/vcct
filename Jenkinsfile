@@ -32,10 +32,11 @@ pipeline {
             }
             steps {
                 script {
-                    def changedFiles = sh(script: "git diff --name-only ${GIT_PREVIOUS_COMMIT} ${env.GIT_COMMIT} || true", returnStdout: true).trim().split("\n")
+                    // Robust diff: Use diff-tree for commit-to-commit changes
+                    def changedFiles = sh(script: "git diff-tree --no-commit-id --name-only -r ${GIT_PREVIOUS_COMMIT} ${env.GIT_COMMIT} || true", returnStdout: true).trim().split("\n")
                     echo "Changed files since last successful build: ${changedFiles}"
                     echo "DEBUG: GIT_PREVIOUS_COMMIT=${GIT_PREVIOUS_COMMIT}, GIT_COMMIT=${env.GIT_COMMIT}"
-                    echo "DEBUG: Raw diff: ${sh(script: 'git diff --name-only ${GIT_PREVIOUS_COMMIT} ${env.GIT_COMMIT}', returnStdout: true)}"
+                    echo "DEBUG: Raw diff-tree: ${sh(script: 'git diff-tree --no-commit-id --name-only -r ${GIT_PREVIOUS_COMMIT} ${env.GIT_COMMIT}', returnStdout: true)}"
                     echo "DEBUG: Changed files list: ${changedFiles.join(', ')}"
                     
                     def servicesToBuild = []; def servicesToRestart = []; def allServices = ['dhcp-server', 'dns-server', 'squid-proxy']; def versions = readYaml file: 'versions.yml'
@@ -76,7 +77,6 @@ pipeline {
             }
         }
 
-        // --- STAGE 4: DEPLOY SERVICES (SIMPLIFIED LOGIC) ---
         stage('Deploy and Restart Services') {
             when {
                 anyOf {
@@ -87,15 +87,14 @@ pipeline {
             }
             steps {
                 script {
-                    def changedFiles = sh(script: "git diff --name-only ${GIT_PREVIOUS_COMMIT} ${env.GIT_COMMIT} || true", returnStdout: true).trim().split("\n")
+                    // Use same robust diff-tree here
+                    def changedFiles = sh(script: "git diff-tree --no-commit-id --name-only -r ${GIT_PREVIOUS_COMMIT} ${env.GIT_COMMIT} || true", returnStdout: true).trim().split("\n")
                     
-                    // This is the new, simplified condition.
                     if (changedFiles.any { it == 'docker-compose.yml' || it == 'versions.yml' }) {
                         echo "Blueprint change detected in docker-compose.yml or versions.yml. Performing a full environment reset."
                         sh "docker compose down"
                         sh "set -a; . ${env.WORKSPACE}/versions.env; set +a; docker compose up -d"
                     } else {
-                        // This is the standard logic for all other code changes.
                         echo "Code change detected. Performing standard deployment."
                         def servicesToBuild = readFile("build-services.txt").trim().split("\n").findAll { it }
                         def servicesToRestart = readFile("restart-services.txt").trim().split("\n").findAll { it }
@@ -121,7 +120,29 @@ pipeline {
             }
             steps {
                 script {
-                    def servicesToCheck = []; def changedFiles = sh(script: "git diff --name-only ${GIT_PREVIOUS_COMMIT} ${env.GIT_COMMIT} || true", returnStdout: true).trim().split("\n"); if (changedFiles.any { it == 'docker-compose.yml' || it == 'versions.yml' }) { servicesToCheck = ['dhcp-server', 'dns-server', 'squid-proxy'] } else { servicesToCheck = readFile("build-services.txt").trim().split("\n").findAll { it } }; if (servicesToCheck) { echo "Performing post-deployment health check for: ${servicesToCheck}"; servicesToCheck.each { service -> echo "Waiting 20 seconds for ${service} to initialize..."; sleep 20; def status = sh(script: "docker inspect --format='{{.State.Health.Status}}' ${service} 2>/dev/null || echo 'unhealthy'", returnStdout: true).trim(); if (status != "healthy") { error("Health check failed for newly deployed service: ${service} (status: ${status}). Initiating automatic rollback.") } else { echo "✅ Health check passed for ${service}." } } } else { echo "No newly deployed services to check." }
+                    // Use diff-tree here too
+                    def changedFiles = sh(script: "git diff-tree --no-commit-id --name-only -r ${GIT_PREVIOUS_COMMIT} ${env.GIT_COMMIT} || true", returnStdout: true).trim().split("\n")
+                    def servicesToCheck = []; 
+                    if (changedFiles.any { it == 'docker-compose.yml' || it == 'versions.yml' }) { 
+                        servicesToCheck = ['dhcp-server', 'dns-server', 'squid-proxy'] 
+                    } else { 
+                        servicesToCheck = readFile("build-services.txt").trim().split("\n").findAll { it } 
+                    }; 
+                    if (servicesToCheck) { 
+                        echo "Performing post-deployment health check for: ${servicesToCheck}"; 
+                        servicesToCheck.each { service -> 
+                            echo "Waiting 20 seconds for ${service} to initialize..."; 
+                            sleep 20; 
+                            def status = sh(script: "docker inspect --format='{{.State.Health.Status}}' ${service} 2>/dev/null || echo 'unhealthy'", returnStdout: true).trim(); 
+                            if (status != "healthy") { 
+                                error("Health check failed for newly deployed service: ${service} (status: ${status}). Initiating automatic rollback.") 
+                            } else { 
+                                echo "✅ Health check passed for ${service}." 
+                            } 
+                        } 
+                    } else { 
+                        echo "No newly deployed services to check." 
+                    }
                 }
             }
         }
@@ -151,7 +172,10 @@ pipeline {
             }
             steps {
                 script {
-                    def gitStatus = sh(script: 'git status --porcelain versions.yml', returnStdout: true).trim(); if (gitStatus) { echo "versions.yml has changed. Committing updates..."; withCredentials([usernamePassword(credentialsId: 'github-creds', usernameVariable: 'GIT_USERNAME', passwordVariable: 'GIT_PASSWORD')]) { sh """ git config --global user.email "jenkins@ci.com"; git config --global user.name "Jenkins CI"; git add versions.yml; git commit -m "ci: Update service versions [skip ci]"; git push https://${GIT_USERNAME}:${GIT_PASSWORD}@github.com/Rtx-boii/vcct.git HEAD:vcct-setup """ } } else { echo "No version changes to commit." }
+                    echo "DEBUG: Current git status for versions.yml:"
+                    sh 'git status --porcelain versions.yml || echo "No changes or file missing"'
+                    sh 'git diff versions.yml || echo "No diff"'
+                    def gitStatus = sh(script: 'git status --porcelain versions.yml', returnStdout: true).trim(); if (gitStatus) { echo "versions.yml has changed. Committing updates..."; withCredentials([usernamePassword(credentialsId: 'github-creds', usernameVariable: 'GIT_USERNAME', passwordVariable: 'GIT_PASSWORD')]) { sh """ git config user.email "jenkins@ci.com"; git config user.name "Jenkins CI"; git remote set-url origin https://${GIT_USERNAME}:${GIT_PASSWORD}@github.com/Rtx-boii/vcct.git; git add versions.yml; git commit -m "ci: Update service versions [skip ci]"; git push origin HEAD:vcct-setup -v """ } } else { echo "No version changes to commit." }
                 }
             }
         }

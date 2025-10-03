@@ -5,170 +5,179 @@ pipeline {
         DOCKER_USER  = "nilessh"
         DOCKER_PASS  = credentials('docker-hub-creds')
         GITHUB_CREDS = credentials('github-creds')
-        ALL_SERVICES = "dhcp-server dns-server squid-proxy"
+        WORKSPACE    = "${env.WORKSPACE}"
     }
 
     options {
-        skipDefaultCheckout()
         timestamps()
-        buildDiscarder(logRotator(numToKeepStr: '20'))
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+    }
+
+    triggers {
+        // Cron triggers only for health check
+        cron('H/10 * * * *')
     }
 
     stages {
 
         stage('Checkout SCM') {
+            when {
+                expression { !currentBuild.getBuildCauses('hudson.triggers.TimerTrigger$TimerTriggerCause') }
+            }
             steps {
-                checkout scm
+                checkout([
+                    $class: 'GitSCM',
+                    branches: [[name: '*/vcct-setup']],
+                    userRemoteConfigs: [[
+                        url: 'https://github.com/Rtx-boii/vcct.git',
+                        credentialsId: 'github-creds'
+                    ]]
+                ])
             }
         }
 
         stage('Detect Changes') {
+            when {
+                expression { !currentBuild.getBuildCauses('hudson.triggers.TimerTrigger$TimerTriggerCause') }
+            }
             steps {
                 script {
-                    // Get the last two commits
-                    def prev = sh(script: "git rev-parse HEAD~1", returnStdout: true).trim()
-                    def curr = sh(script: "git rev-parse HEAD", returnStdout: true).trim()
+                    def prevCommit = sh(script: "git rev-parse HEAD~1", returnStdout: true).trim()
+                    def currCommit = sh(script: "git rev-parse HEAD", returnStdout: true).trim()
+                    def changedFiles = sh(
+                        script: "git diff-tree --no-commit-id --name-only -r ${prevCommit} ${currCommit}",
+                        returnStdout: true
+                    ).trim().split("\n")
 
-                    // Changed files
-                    def changedFiles = sh(script: "git diff-tree --no-commit-id --name-only -r ${prev} ${curr}", returnStdout: true).trim().split("\n")
                     echo "Changed files: ${changedFiles}"
 
-                    // Define critical build files for each service
-                    def buildFiles = [
-                        'dhcp-server': ['Dockerfile', 'Dockerfile.sh'],
-                        'dns-server': ['Dockerfile', 'entrypoint.sh'],
-                        'squid-proxy': ['Dockerfile', 'start-squid.sh']
-                    ]
+                    def buildServices = []
+                    def restartServices = []
 
-                    def servicesToBuild = []
-                    def servicesToRestart = []
-
-                    ALL_SERVICES.split().each { service ->
-                        def changedBuildFiles = changedFiles.findAll { it.startsWith("${service}/") && buildFiles[service].any { f -> it.endsWith(f) } }
-                        if (changedBuildFiles) {
-                            servicesToBuild << service
-                        } else if (changedFiles.any { it.startsWith("${service}/") }) {
-                            servicesToRestart << service
+                    changedFiles.each { file ->
+                        if (file.startsWith("dhcp-server/")) {
+                            if (file.endsWith("Dockerfile") || file.endsWith("entrypoint.sh")) {
+                                buildServices << "dhcp-server"
+                            } else {
+                                restartServices << "dhcp-server"
+                            }
+                        } else if (file.startsWith("dns-server/")) {
+                            if (file.endsWith("Dockerfile") || file.endsWith("entrypoint.sh")) {
+                                buildServices << "dns-server"
+                            } else {
+                                restartServices << "dns-server"
+                            }
+                        } else if (file.startsWith("squid-proxy/")) {
+                            if (file.endsWith("Dockerfile") || file.endsWith("start-squid.sh")) {
+                                buildServices << "squid-proxy"
+                            } else {
+                                restartServices << "squid-proxy"
+                            }
                         }
                     }
 
-                    // Save for later stages
-                    writeFile file: 'build-services.txt', text: servicesToBuild.join("\n")
-                    writeFile file: 'restart-services.txt', text: servicesToRestart.join("\n")
-                    echo "Services to Build: ${servicesToBuild}"
-                    echo "Services to Restart: ${servicesToRestart}"
+                    buildServices = buildServices.unique()
+                    restartServices = restartServices.unique() - buildServices
+
+                    writeFile file: 'build-services.txt', text: buildServices.join("\n")
+                    writeFile file: 'restart-services.txt', text: restartServices.join("\n")
+
+                    echo "Services to Build: ${buildServices}"
+                    echo "Services to Restart: ${restartServices}"
                 }
             }
         }
 
         stage('Build and Push Images') {
             when {
-                expression { return readFile('build-services.txt').trim() != "" }
+                allOf {
+                    expression { !currentBuild.getBuildCauses('hudson.triggers.TimerTrigger$TimerTriggerCause') }
+                    expression { fileExists('build-services.txt') && readFile('build-services.txt').trim() }
+                }
             }
             steps {
                 script {
-                    def servicesToBuild = readFile('build-services.txt').trim().split("\n")
-                    def versions = [:]
-
-                    // Load previous versions
-                    if (fileExists('versions.yml')) {
-                        versions = readYaml(file: 'versions.yml')
-                    }
-
-                    servicesToBuild.each { service ->
-                        // Increment version
-                        versions[service] = (versions[service] ?: 0) + 1
-                        def version = versions[service]
-
-                        echo "Building ${service}:${version}"
+                    def buildServices = readFile('build-services.txt').trim().split("\n")
+                    buildServices.each { service ->
                         sh """
-                        docker build -t ${DOCKER_USER}/${service}:${version} ./${service}
-                        docker login -u ${DOCKER_USER} -p ${DOCKER_PASS}
-                        docker push ${DOCKER_USER}/${service}:${version}
+                            cd ${service}
+                            docker build -t ${DOCKER_USER}/${service}:latest .
+                            docker push ${DOCKER_USER}/${service}:latest
                         """
                     }
+                }
+            }
+        }
 
-                    // Save updated versions
-                    writeYaml file: 'versions.yml', data: versions
-                    def envContent = versions.collect { k,v -> "${k.toUpperCase().replace('-','_')}_VERSION=${v}" }.join("\n")
+        stage('Update Versions') {
+            when {
+                allOf {
+                    expression { !currentBuild.getBuildCauses('hudson.triggers.TimerTrigger$TimerTriggerCause') }
+                    expression { fileExists('build-services.txt') && readFile('build-services.txt').trim() }
+                }
+            }
+            steps {
+                script {
+                    def buildServices = readFile('build-services.txt').trim().split("\n")
+                    def prevVersions = [:]
+
+                    if (fileExists('versions.yml')) {
+                        prevVersions = readYaml file: 'versions.yml'
+                    }
+
+                    def envContent = ""
+                    buildServices.each { service ->
+                        def prev = prevVersions.get(service) ?: 0
+                        def newVersion = prev.toInteger() + 1
+                        prevVersions[service] = newVersion
+                        envContent += "${service.toUpperCase().replace('-','_')}_VERSION=${newVersion}\n"
+                    }
+
                     writeFile file: 'versions.env', text: envContent
+                    writeYaml file: 'versions.yml', data: prevVersions
                 }
             }
         }
 
         stage('Deploy Services') {
-            steps {
-                script {
-                    // Load versions
-                    if (fileExists('versions.env')) {
-                        sh "set -a; . ./versions.env; set +a"
-                    }
-
-                    def restartServices = readFile('restart-services.txt').trim().split("\n")
-                    restartServices.each { service ->
-                        echo "Deploying ${service}"
-                        sh "docker compose up -d --no-deps --force-recreate ${service}"
-                    }
-
-                    def buildServices = readFile('build-services.txt').trim().split("\n")
-                    buildServices.each { service ->
-                        echo "Deploying ${service}"
-                        sh "docker compose up -d --no-deps --force-recreate ${service}"
-                    }
-                }
-            }
-        }
-
-        stage('Post-Deployment Health Check') {
-            steps {
-                script {
-                    def services = ALL_SERVICES.split()
-                    services.each { service ->
-                        echo "Waiting for ${service}..."
-                        sleep 20
-                        def status = sh(script: "docker inspect --format='{{.State.Health.Status}}' ${service}", returnStdout: true).trim()
-                        if (status != "healthy") {
-                            error "Health check failed for ${service} (status: ${status})"
-                        }
-                        echo "${service} is healthy."
-                    }
-                }
-            }
-        }
-
-        stage('Health Monitoring (TimerTrigger)') {
             when {
-                triggeredBy 'TimerTrigger'
+                expression { !currentBuild.getBuildCauses('hudson.triggers.TimerTrigger$TimerTriggerCause') }
             }
             steps {
                 script {
-                    ALL_SERVICES.split().each { service ->
-                        echo "Monitoring ${service}..."
-                        def status = sh(script: "docker inspect --format='{{.State.Health.Status}}' ${service}", returnStdout: true).trim()
-                        if (status != "healthy") {
-                            echo "${service} unhealthy! Attempting restart..."
+                    sh "set -a && . ${WORKSPACE}/versions.env && set +a"
+
+                    if (fileExists('build-services.txt') && readFile('build-services.txt').trim()) {
+                        def buildServices = readFile('build-services.txt').trim().split("\n")
+                        buildServices.each { service ->
                             sh "docker compose up -d --no-deps --force-recreate ${service}"
-                        } else {
-                            echo "${service} is healthy."
+                        }
+                    }
+
+                    if (fileExists('restart-services.txt') && readFile('restart-services.txt').trim()) {
+                        def restartServices = readFile('restart-services.txt').trim().split("\n")
+                        restartServices.each { service ->
+                            sh "docker compose up -d --no-deps --force-recreate ${service}"
                         }
                     }
                 }
             }
         }
 
-        stage('Commit Version Updates') {
-            when {
-                expression { return readFile('build-services.txt').trim() != "" }
-            }
+        stage('Health Check') {
             steps {
                 script {
-                    sh """
-                    git config user.name 'Jenkins'
-                    git config user.email 'jenkins@local'
-                    git add versions.yml
-                    git commit -m 'Update service versions [Jenkins]'
-                    git push origin HEAD
-                    """
+                    def services = ['dhcp-server','dns-server','squid-proxy']
+                    services.each { service ->
+                        def status = sh(
+                            script: "docker inspect --format='{{.State.Health.Status}}' ${service}",
+                            returnStdout: true
+                        ).trim()
+                        echo "${service} health status: ${status}"
+                        if (status != 'healthy') {
+                            error("${service} is not healthy!")
+                        }
+                    }
                 }
             }
         }
@@ -176,14 +185,14 @@ pipeline {
 
     post {
         always {
-            sh 'rm -f build-services.txt restart-services.txt versions.env'
+            sh "rm -f build-services.txt restart-services.txt versions.env"
         }
         failure {
             script {
                 echo "Failure detected. Attempting rollback..."
                 if (fileExists('versions.yml')) {
-                    def versions = readYaml(file: 'versions.yml')
-                    echo "Previous versions: ${versions}"
+                    def prevVersions = readYaml file: 'versions.yml'
+                    echo "Previous versions: ${prevVersions}"
                 }
             }
         }

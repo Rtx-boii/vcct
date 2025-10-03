@@ -33,7 +33,7 @@ pipeline {
                 script {
                     def SERVICES = ['dhcp-server', 'dns-server', 'squid-proxy']
 
-                    // Get changed files between last two commits (safe for first run)
+                    // Changed files between last two commits (safe for first run)
                     def CHANGED_FILES = sh(
                         script: "git diff-tree --no-commit-id --name-only -r HEAD~1 HEAD || true",
                         returnStdout: true
@@ -83,7 +83,10 @@ pipeline {
                     def buildServices = readFile('build-services.txt').trim().split("\n")
                     buildServices.each { svc ->
                         def versionVar = svc.toUpperCase().replace('-', '_') + "_VERSION"
-                        def version = sh(script: "grep -E '^${versionVar}=' \$WORKSPACE/versions.env | cut -d '=' -f2", returnStdout: true).trim()
+                        def version = sh(
+                            script: "grep -E '^${versionVar}=' \$WORKSPACE/versions.env | cut -d '=' -f2 || true",
+                            returnStdout: true
+                        ).trim()
 
                         if (version.isInteger()) {
                             version = version.toInteger() + 1
@@ -113,10 +116,10 @@ pipeline {
                     """
 
                     def restartServices = fileExists('restart-services.txt') ? readFile('restart-services.txt').trim().split("\n") : []
-                    def buildServices = fileExists('build-services.txt') ? readFile('build-services.txt').trim().split("\n") : []
-                    def deployServices = (restartServices + buildServices).findAll { it?.trim() }.unique()
+                    def buildServices   = fileExists('build-services.txt') ? readFile('build-services.txt').trim().split("\n") : []
+                    def deployServices  = (restartServices + buildServices).findAll { it?.trim() }.unique()
 
-                    if (deployServices) {
+                    if (deployServices && deployServices.size() > 0) {
                         deployServices.each { svc ->
                             sh "docker compose up -d --no-deps --force-recreate ${svc}"
                         }

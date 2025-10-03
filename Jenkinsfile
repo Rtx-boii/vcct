@@ -24,9 +24,11 @@ pipeline {
 
         stage('Detect Changes & Prepare for Build') {
             when {
-                anyOf {
-                    triggeredBy 'SCMTrigger'
-                    triggeredBy 'UserIdCause'
+                expression {
+                    def causes = currentBuild.rawBuild.getCauses()
+                    return causes.any { cause ->
+                        cause._class.contains('GitHub') || cause._class.contains('SCM') || cause._class.contains('UserId')
+                    }
                 }
             }
             steps {
@@ -56,9 +58,11 @@ pipeline {
 
         stage('Build and Push New Images') {
             when {
-                anyOf {
-                    triggeredBy 'SCMTrigger'
-                    triggeredBy 'UserIdCause'
+                expression {
+                    def causes = currentBuild.rawBuild.getCauses()
+                    return causes.any { cause ->
+                        cause._class.contains('GitHub') || cause._class.contains('SCM') || cause._class.contains('UserId')
+                    }
                 }
             }
             steps {
@@ -71,9 +75,11 @@ pipeline {
         // --- STAGE 4: DEPLOY SERVICES (SIMPLIFIED LOGIC) ---
         stage('Deploy and Restart Services') {
             when {
-                anyOf {
-                    triggeredBy 'SCMTrigger'
-                    triggeredBy 'UserIdCause'
+                expression {
+                    def causes = currentBuild.rawBuild.getCauses()
+                    return causes.any { cause ->
+                        cause._class.contains('GitHub') || cause._class.contains('SCM') || cause._class.contains('UserId')
+                    }
                 }
             }
             steps {
@@ -104,9 +110,11 @@ pipeline {
 
         stage('Post-Deployment Health Check') {
             when {
-                anyOf {
-                    triggeredBy 'SCMTrigger'
-                    triggeredBy 'UserIdCause'
+                expression {
+                    def causes = currentBuild.rawBuild.getCauses()
+                    return causes.any { cause ->
+                        cause._class.contains('GitHub') || cause._class.contains('SCM') || cause._class.contains('UserId')
+                    }
                 }
             }
             steps {
@@ -132,15 +140,16 @@ pipeline {
 
         stage('Commit Version Update') {
             when {
-                anyOf {
-                    triggeredBy 'SCMTrigger'
-                    triggeredBy 'TimerTrigger'
-                    triggeredBy 'UserIdCause'
+                expression {
+                    def causes = currentBuild.rawBuild.getCauses()
+                    return causes.any { cause ->
+                        cause._class.contains('GitHub') || cause._class.contains('SCM') || cause._class.contains('UserId') || cause._class.contains('Timer')
+                    }
                 }
             }
             steps {
                 script {
-                    def gitStatus = sh(script: 'git status --porcelain versions.yml', returnStdout: true).trim(); if (gitStatus) { echo "versions.yml has changed. Committing updates..."; withCredentials([usernamePassword(credentialsId: GITHUB_CREDS, usernameVariable: 'GIT_USERNAME', passwordVariable: 'GIT_PASSWORD')]) { sh """ git config --global user.email "jenkins@ci.com"; git config --global user.name "Jenkins CI"; git add versions.yml; git commit -m "ci: Update service versions [skip ci]"; git push https://${GIT_USERNAME}:${GIT_PASSWORD}@github.com/Rtx-boii/vcct.git HEAD:vcct-setup """ } } else { echo "No version changes to commit." }
+                    def gitStatus = sh(script: 'git status --porcelain versions.yml', returnStdout: true).trim(); if (gitStatus) { echo "versions.yml has changed. Committing updates..."; withCredentials([usernamePassword(credentialsId: 'github-creds', usernameVariable: 'GIT_USERNAME', passwordVariable: 'GIT_PASSWORD')]) { sh """ git config --global user.email "jenkins@ci.com"; git config --global user.name "Jenkins CI"; git add versions.yml; git commit -m "ci: Update service versions [skip ci]"; git push https://${GIT_USERNAME}:${GIT_PASSWORD}@github.com/Rtx-boii/vcct.git HEAD:vcct-setup """ } } else { echo "No version changes to commit." }
                 }
             }
         }

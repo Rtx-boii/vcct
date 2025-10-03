@@ -31,7 +31,7 @@ RUN mkdir -p /usr/sbin /lib64 /etc/named /var/named /var/log/named /etc/crypto-p
 
 COPY --from=builder /runtime/ /
 
-RUN apk add --no-cache bash
+RUN apk add --no-cache bash bind-tools
 
 COPY named.conf /etc/named.conf
 COPY forward.vcct.com /var/named/forward.vcct.com
@@ -50,6 +50,10 @@ RUN adduser -D -u 1000 named \
 
 ENV DNS_OPTIONS="-u named -g"
 ENV LD_LIBRARY_PATH=/lib64:/usr/lib64
+
+#health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD dig @localhost || exit 1
 
 EXPOSE 53/tcp
 EXPOSE 53/udp

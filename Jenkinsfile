@@ -12,7 +12,6 @@ pipeline {
         cron('H/10 * * * *')
     }
 
-    
     stages {
         stage('Checkout SCM') {
             steps {
@@ -140,6 +139,11 @@ pipeline {
                             if (parts.size() == 2) {
                                 versionsMap[parts[0]] = parts[1]
                             }
+                        }
+
+                        // Safely overwrite versions.yml
+                        if (fileExists('versions.yml')) {
+                            sh "rm -f versions.yml"
                         }
                         writeYaml file: 'versions.yml', data: versionsMap
 

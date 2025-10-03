@@ -24,11 +24,10 @@ pipeline {
 
         stage('Detect Changes & Prepare for Build') {
             when {
-                expression {
-                    def causes = currentBuild.rawBuild.getCauses()
-                    return causes.any { cause ->
-                        cause._class.contains('GitHub') || cause._class.contains('SCM') || cause._class.contains('UserId')
-                    }
+                anyOf {
+                    triggeredBy 'hudson.plugins.github.GitHubPushCause'
+                    triggeredBy 'SCMPollingCause'
+                    triggeredBy 'UserIdCause'
                 }
             }
             steps {
@@ -58,11 +57,10 @@ pipeline {
 
         stage('Build and Push New Images') {
             when {
-                expression {
-                    def causes = currentBuild.rawBuild.getCauses()
-                    return causes.any { cause ->
-                        cause._class.contains('GitHub') || cause._class.contains('SCM') || cause._class.contains('UserId')
-                    }
+                anyOf {
+                    triggeredBy 'hudson.plugins.github.GitHubPushCause'
+                    triggeredBy 'SCMPollingCause'
+                    triggeredBy 'UserIdCause'
                 }
             }
             steps {
@@ -75,11 +73,10 @@ pipeline {
         // --- STAGE 4: DEPLOY SERVICES (SIMPLIFIED LOGIC) ---
         stage('Deploy and Restart Services') {
             when {
-                expression {
-                    def causes = currentBuild.rawBuild.getCauses()
-                    return causes.any { cause ->
-                        cause._class.contains('GitHub') || cause._class.contains('SCM') || cause._class.contains('UserId')
-                    }
+                anyOf {
+                    triggeredBy 'hudson.plugins.github.GitHubPushCause'
+                    triggeredBy 'SCMPollingCause'
+                    triggeredBy 'UserIdCause'
                 }
             }
             steps {
@@ -110,11 +107,10 @@ pipeline {
 
         stage('Post-Deployment Health Check') {
             when {
-                expression {
-                    def causes = currentBuild.rawBuild.getCauses()
-                    return causes.any { cause ->
-                        cause._class.contains('GitHub') || cause._class.contains('SCM') || cause._class.contains('UserId')
-                    }
+                anyOf {
+                    triggeredBy 'hudson.plugins.github.GitHubPushCause'
+                    triggeredBy 'SCMPollingCause'
+                    triggeredBy 'UserIdCause'
                 }
             }
             steps {
@@ -140,11 +136,11 @@ pipeline {
 
         stage('Commit Version Update') {
             when {
-                expression {
-                    def causes = currentBuild.rawBuild.getCauses()
-                    return causes.any { cause ->
-                        cause._class.contains('GitHub') || cause._class.contains('SCM') || cause._class.contains('UserId') || cause._class.contains('Timer')
-                    }
+                anyOf {
+                    triggeredBy 'hudson.plugins.github.GitHubPushCause'
+                    triggeredBy 'SCMPollingCause'
+                    triggeredBy 'TimerTrigger'
+                    triggeredBy 'UserIdCause'
                 }
             }
             steps {

@@ -52,6 +52,7 @@ ENV DNS_OPTIONS="-u named -g"
 ENV LD_LIBRARY_PATH=/lib64:/usr/lib64
 
 #health check
+
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD dig @localhost || exit 1
 

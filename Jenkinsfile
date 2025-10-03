@@ -5,12 +5,10 @@ pipeline {
         DOCKER_USER  = "nilessh"
         DOCKER_PASS  = credentials('docker-hub-creds')
         GITHUB_CREDS = credentials('github-creds')
-        WORKSPACE_DIR = "${env.WORKSPACE}"
-        SERVICES = ['dhcp-server', 'dns-server', 'squid-proxy']
     }
 
     triggers {
-        // Cron to run health check every 10 minutes
+        // Only health check runs on this cron
         cron('H/10 * * * *')
     }
 
@@ -30,23 +28,26 @@ pipeline {
         }
 
         stage('Detect Changes') {
-            when {
-                not { triggeredBy 'TimerTrigger' } // Skip on cron
-            }
+            when { not { triggeredBy 'TimerTrigger' } }
             steps {
                 script {
-                    CHANGED_FILES = sh(
+                    def SERVICES = ['dhcp-server', 'dns-server', 'squid-proxy']
+
+                    // Get changed files between last two commits
+                    def CHANGED_FILES = sh(
                         script: "git diff-tree --no-commit-id --name-only -r HEAD~1 HEAD",
                         returnStdout: true
                     ).trim().split("\n")
                     echo "Changed files: ${CHANGED_FILES}"
 
-                    BUILD_SERVICES = []
-                    RESTART_SERVICES = []
+                    def BUILD_SERVICES = []
+                    def RESTART_SERVICES = []
 
                     SERVICES.each { svc ->
                         def dockerfileChanged = CHANGED_FILES.any { it.startsWith("${svc}/Dockerfile") }
-                        def entrypointChanged = CHANGED_FILES.any { it.startsWith("${svc}/entrypoint") || it.startsWith("${svc}/start-squid.sh") }
+                        def entrypointChanged = CHANGED_FILES.any {
+                            it.startsWith("${svc}/entrypoint") || it.startsWith("${svc}/start-squid.sh")
+                        }
 
                         if (dockerfileChanged || entrypointChanged) {
                             BUILD_SERVICES.add(svc)
@@ -66,38 +67,28 @@ pipeline {
 
         stage('Build and Push Images') {
             when {
-                allOf {
-                    not { triggeredBy 'TimerTrigger' }
-                    expression { return fileExists('build-services.txt') && readFile('build-services.txt').trim() }
-                }
+                expression { return fileExists('build-services.txt') && readFile('build-services.txt').trim() != '' }
             }
             steps {
                 script {
-                    // Read versions.yml
-                    def versions = readYaml file: 'versions.yml'
-
                     sh """
-                    set -a
-                    [ -f \$WORKSPACE/versions.env ] || echo "DHCP_SERVER_VERSION=1\\nDNS_SERVER_VERSION=1\\nSQUID_PROXY_VERSION=1" > \$WORKSPACE/versions.env
-                    . \$WORKSPACE/versions.env
-
-                    for svc in \$(cat build-services.txt); do
-                        # Increment version in env
-                        version_var="\${svc.replace('-', '_').toUpperCase()}_VERSION"
-                        version_val=\$((\${!version_var}+1))
-                        export \$version_var=\$version_val
-
-                        echo "Building \$svc with version \$version_val"
-                        docker build -t nilessh/\$svc:\$version_val \$WORKSPACE/\$svc
-                        docker push nilessh/\$svc:\$version_val
-
-                        # Update versions.yml file
-                        yq e -i ".\"${svc}\" = \$version_val" \$WORKSPACE/versions.yml
-                    done
-
-                    # Update versions.env as well
-                    env | grep _VERSION= | grep -E 'DHCP|DNS|SQUID' > \$WORKSPACE/versions.env
+                        set -a
+                        [ -f \$WORKSPACE/versions.env ] || touch \$WORKSPACE/versions.env
+                        . \$WORKSPACE/versions.env
                     """
+
+                    def buildServices = readFile('build-services.txt').trim().split("\n")
+                    buildServices.each { svc ->
+                        def versionVar = svc.toUpperCase().replace('-', '_') + "_VERSION"
+                        def version = sh(script: "echo \$$versionVar", returnStdout: true).trim()
+                        version = version == "" ? "1" : version
+                        version = version.toInteger() + 1
+                        sh "docker build -t ${DOCKER_USER}/${svc}:${version} ./${svc}"
+                        sh "docker push ${DOCKER_USER}/${svc}:${version}"
+                        // Update env file for next use
+                        sh "sed -i '/${versionVar}/d' \$WORKSPACE/versions.env || true"
+                        sh "echo ${versionVar}=${version} >> \$WORKSPACE/versions.env"
+                    }
                 }
             }
         }
@@ -106,60 +97,53 @@ pipeline {
             steps {
                 script {
                     sh """
-                    set -a
-                    [ -f \$WORKSPACE/versions.env ] || echo "DHCP_SERVER_VERSION=1\\nDNS_SERVER_VERSION=1\\nSQUID_PROXY_VERSION=1" > \$WORKSPACE/versions.env
-                    . \$WORKSPACE/versions.env
+                        set -a
+                        [ -f \$WORKSPACE/versions.env ] || touch \$WORKSPACE/versions.env
+                        . \$WORKSPACE/versions.env
+                    """
 
-                    # Recreate containers for built images
-                    if [ -f build-services.txt ]; then
-                        for svc in \$(cat build-services.txt); do
-                            docker compose up -d --no-deps --force-recreate \$svc
-                        done
-                    fi
+                    def restartServices = fileExists('restart-services.txt') ? readFile('restart-services.txt').trim().split("\n") : []
+                    def buildServices = fileExists('build-services.txt') ? readFile('build-services.txt').trim().split("\n") : []
 
-                    # Recreate containers for other changed files
-                    if [ -f restart-services.txt ]; then
-                        for svc in \$(cat restart-services.txt); do
-                            docker compose up -d --no-deps --force-recreate \$svc
-                        done
-                    fi
+                    def deployServices = (restartServices + buildServices).unique()
+
+                    deployServices.each { svc ->
+                        sh "docker compose up -d --no-deps --force-recreate ${svc}"
+                    }
+                }
+            }
+        }
+
+        stage('Update versions.yml in repo') {
+            when { not { triggeredBy 'TimerTrigger' } }
+            steps {
+                script {
+                    def versionsMap = [:]
+                    def content = readFile('versions.env').trim().split("\n")
+                    content.each { line ->
+                        def parts = line.split('=')
+                        versionsMap[parts[0]] = parts[1]
+                    }
+                    writeYaml file: 'versions.yml', data: versionsMap
+
+                    sh """
+                        git config user.email "jenkins@vcct.com"
+                        git config user.name "Jenkins"
+                        git add versions.yml
+                        git commit -m "Update versions.yml by pipeline" || true
+                        git push origin vcct-setup || true
                     """
                 }
             }
         }
 
-        stage('Health Check') {
+        stage('Health Monitoring (TimerTrigger)') {
+            when { triggeredBy 'TimerTrigger' }
             steps {
                 script {
-                    sh """
-                    for svc in dhcp-server dns-server squid-proxy; do
-                        status=\$(docker inspect --format='{{.State.Health.Status}}' \$svc 2>/dev/null || echo 'unknown')
-                        echo "\$svc health: \$status"
-                        if [ "\$status" != "healthy" ]; then
-                            echo "Warning: \$svc is not healthy!"
-                        fi
-                    done
-                    """
-                }
-            }
-        }
-
-        stage('Commit Version Updates') {
-            when {
-                allOf {
-                    not { triggeredBy 'TimerTrigger' }
-                    expression { return fileExists('build-services.txt') && readFile('build-services.txt').trim() }
-                }
-            }
-            steps {
-                script {
-                    sh """
-                    git config user.email "jenkins@vcct.com"
-                    git config user.name "Jenkins CI"
-                    git add versions.yml
-                    git commit -m "Update service versions after build"
-                    git push origin vcct-setup
-                    """
+                    // Here you can run your health check commands
+                    sh "docker ps -a"
+                    sh "docker inspect dhcp-server dns-server squid-proxy"
                 }
             }
         }
@@ -167,7 +151,10 @@ pipeline {
 
     post {
         always {
-            sh 'rm -f build-services.txt restart-services.txt'
+            sh "rm -f build-services.txt restart-services.txt versions.env"
+        }
+        failure {
+            echo "Pipeline failed. Rollback or manual intervention may be required."
         }
     }
 }

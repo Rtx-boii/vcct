@@ -1,5 +1,3 @@
-
-
 services:
   dhcp-server:
     image: nilessh/dhcp-server:${DHCP_SERVER_VERSION}
@@ -11,7 +9,7 @@ services:
       - DHCP_INTERFACE=ens37
     volumes:
       - ./dhcp-server/dhcpd.conf:/etc/dhcp/dhcpd.conf:ro
-      - /home/it22093264/vcct-assignment/dhcp-serve/dhcpd-data:/var/lib/dhcpd
+      - /home/it22093264/test/vcct/dhcp-server/dhcpd-data:/var/lib/dhcpd
     restart: unless-stopped
 
   dns-server:
@@ -26,12 +24,12 @@ services:
       - ./dns-server/named.conf:/etc/named.conf:ro
       - ./dns-server/forward.vcct.com:/var/named/forward.vcct.com:ro
       - ./dns-server/reverse.vcct.com:/var/named/reverse.vcct.com:ro
-      - /home/it22093264/vcct-assignment/dns-server/logs:/var/log/named
+      - /home/it22093264/test/vcct/dns-server/logs:/var/log/named
     restart: unless-stopped
 
   squid-proxy:
     image: nilessh/squid-proxy:${SQUID_PROXY_VERSION}
-    container_name: squid-proxy-4
+    container_name: squid-proxy
     depends_on:
       - dhcp-server
     ports:
@@ -42,7 +40,7 @@ services:
           cpus: "1"
           memory: 512M
     volumes:
-      - /home/it22093264/vcct-assignment/squid-proxy/logs:/var/log/squid
+      - /home/it22093264/test/vcct/squid-proxy/logs:/var/log/squid
       - ./squid-proxy/squid.conf:/etc/squid/squid.conf:ro
       - ./squid-proxy/banned-keywords:/etc/squid/banned-keywords:ro
       - ./squid-proxy/blocked-filextensions:/etc/squid/blocked-filextensions:ro

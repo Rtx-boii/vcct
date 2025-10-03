@@ -211,7 +211,13 @@ pipeline {
         // Stage 6: Monitor Stability (Runs ONLY on the 10-minute schedule)
         // -------------------------------
         stage('Periodic Health Check') {
-            when { triggeredBy 'TimerTrigger' }
+            when { 
+                 anyOf {
+                  
+                    triggeredBy 'TimerTrigger'
+                    triggeredBy 'UserIdCause'
+                } 
+            }
             steps {
                 script {
                     echo "Running periodic health check for all services..."

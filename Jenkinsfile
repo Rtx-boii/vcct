@@ -20,7 +20,7 @@ pipeline {
     stages {
 
         // -------------------------------
-        // Stage 1: Checkout Repository (Runs for BOTH triggers)
+        // Stage 1: Checkout Repository (Runs for ALL triggers)
         // -------------------------------
         stage('Checkout Repository') {
             steps {
@@ -29,20 +29,25 @@ pipeline {
         }
 
         // -------------------------------
-        // Stage 2: Detect Changes (Runs ONLY for GitHub Commits)
+        // Stage 2: Detect Changes (Runs for GitHub commits AND Manual builds)
         // -------------------------------
         stage('Detect Changes & Prepare for Build') {
-            when { triggeredBy 'SCMTrigger' }
+            when {
+                anyOf {
+                    triggeredBy 'SCMTrigger'  // Triggered by a GitHub push
+                    triggeredBy 'UserIdCause' // Triggered by clicking "Build Now"
+                }
+            }
             steps {
                 script {
                     def changedFiles = sh(script: "git diff --name-only ${GIT_PREVIOUS_COMMIT} ${env.GIT_COMMIT} || true", returnStdout: true).trim().split("\n")
                     echo "Changed files since last successful build: ${changedFiles}"
-
+                    
                     def servicesToBuild = []
                     def servicesToRestart = []
                     def allServices = ['dhcp-server', 'dns-server', 'squid-proxy']
                     def versions = readYaml file: 'versions.yml'
-
+                    
                     // Only increment versions if it's a code change, not a blueprint (yml) change.
                     if (!changedFiles.any { it == 'docker-compose.yml' || it == 'versions.yml' }) {
                         allServices.each { service ->
@@ -55,12 +60,12 @@ pipeline {
                             }
                         }
                     }
-
+                    
                     servicesToRestart = servicesToRestart.unique().findAll { !servicesToBuild.contains(it) }
 
                     echo "Services to Build/Rebuild: ${servicesToBuild}"
-                    echo "Services to Restart (Recreate): ${servicesToRestart}"
-
+                    echo "Services to Recreate (config change): ${servicesToRestart}"
+                    
                     writeYaml file: 'versions.yml', data: versions, overwrite: true
                     def versionsEnv = versions.collect { service, version -> "${service.replace('-', '_').toUpperCase()}_VERSION=${version}" }.join("\n")
                     writeFile file: "versions.env", text: versionsEnv
@@ -71,10 +76,15 @@ pipeline {
         }
 
         // -------------------------------
-        // Stage 3: Build Images (Runs ONLY for GitHub Commits)
+        // Stage 3: Build Images (Runs for GitHub commits AND Manual builds)
         // -------------------------------
         stage('Build and Push New Images') {
-            when { triggeredBy 'SCMTrigger' }
+            when {
+                anyOf {
+                    triggeredBy 'SCMTrigger'
+                    triggeredBy 'UserIdCause'
+                }
+            }
             steps {
                 script {
                     def servicesToBuild = readFile("build-services.txt").trim().split("\n").findAll { it }
@@ -95,25 +105,30 @@ pipeline {
                                 """
                             }
                         }
-                    } else { echo "No new images to build." }
+                    } else {
+                        echo "No new images to build."
+                    }
                 }
             }
         }
 
         // -------------------------------
-        // Stage 4: Deploy Services (Runs ONLY for GitHub Commits)
+        // Stage 4: Deploy Services (Runs for GitHub commits AND Manual builds)
         // -------------------------------
         stage('Deploy and Restart Services') {
-            when { triggeredBy 'SCMTrigger' }
+            when {
+                anyOf {
+                    triggeredBy 'SCMTrigger'
+                    triggeredBy 'UserIdCause'
+                }
+            }
             steps {
                 script {
                     def changedFiles = sh(script: "git diff --name-only ${GIT_PREVIOUS_COMMIT} ${env.GIT_COMMIT} || true", returnStdout: true).trim().split("\n")
-
                     if (changedFiles.any { it == 'docker-compose.yml' }) {
                         echo "Structural change in docker-compose.yml detected. Performing a full environment reset."
                         sh "docker compose down"
                         sh "set -a; source ${env.WORKSPACE}/versions.env; set +a; docker compose up -d"
-
                     } else if (changedFiles.any { it == 'versions.yml' }) {
                         echo "Change in versions.yml detected. Performing a surgical deployment/rollback."
                         def oldVersionsContent = sh(script: "git show ${GIT_PREVIOUS_COMMIT}:versions.yml", returnStdout: true).trim()
@@ -121,13 +136,14 @@ pipeline {
                         def newVersions = readYaml file: 'versions.yml'
                         def servicesToDeploy = []
                         newVersions.keySet().each { service ->
-                            if (newVersions[service] != oldVersions.get(service)) { servicesToDeploy << service }
+                            if (newVersions[service] != oldVersions.get(service)) {
+                                servicesToDeploy << service
+                            }
                         }
                         if (servicesToDeploy) {
                             echo "Deploying version changes for services: ${servicesToDeploy}"
                             sh "set -a; source ${env.WORKSPACE}/versions.env; set +a; docker compose up -d --no-deps --force-recreate ${servicesToDeploy.join(' ')}"
                         }
-
                     } else {
                         echo "Code change detected. Performing standard deployment."
                         def servicesToBuild = readFile("build-services.txt").trim().split("\n").findAll { it }
@@ -136,7 +152,6 @@ pipeline {
                             sh "set -a; source ${env.WORKSPACE}/versions.env; set +a; docker compose up -d --no-deps --force-recreate ${servicesToBuild.join(' ')}"
                         }
                         if (servicesToRestart) {
-                            // UPDATED LOGIC: Use 'up' instead of 'restart' for robustness.
                             echo "Recreating services with config changes: ${servicesToRestart}"
                             sh "docker compose up -d --no-deps --force-recreate ${servicesToRestart.join(' ')}"
                         }
@@ -146,10 +161,15 @@ pipeline {
         }
 
         // -------------------------------
-        // Stage 5: Verify Deployment (Runs ONLY for GitHub Commits)
+        // Stage 5: Verify Deployment (Runs for GitHub commits AND Manual builds)
         // -------------------------------
         stage('Post-Deployment Health Check') {
-            when { triggeredBy 'SCMTrigger' }
+            when {
+                anyOf {
+                    triggeredBy 'SCMTrigger'
+                    triggeredBy 'UserIdCause'
+                }
+            }
             steps {
                 script {
                     def servicesToCheck = []
@@ -161,12 +181,13 @@ pipeline {
                         def oldVersions = readYaml text: oldVersionsContent
                         def newVersions = readYaml file: 'versions.yml'
                         newVersions.keySet().each { service ->
-                            if (newVersions[service] != oldVersions.get(service)) { servicesToCheck << service }
+                            if (newVersions[service] != oldVersions.get(service)) {
+                                servicesToCheck << service
+                            }
                         }
                     } else {
                         servicesToCheck = readFile("build-services.txt").trim().split("\n").findAll { it }
                     }
-
                     if (servicesToCheck) {
                         echo "Performing post-deployment health check for: ${servicesToCheck}"
                         servicesToCheck.each { service ->
@@ -179,7 +200,9 @@ pipeline {
                                 echo "✅ Health check passed for ${service}."
                             }
                         }
-                    } else { echo "No newly deployed services to check." }
+                    } else {
+                        echo "No newly deployed services to check."
+                    }
                 }
             }
         }
@@ -192,25 +215,37 @@ pipeline {
             steps {
                 script {
                     echo "Running periodic health check for all services..."
+                    // This stage now reads versions.yml and prepares its own environment to prevent errors.
+                    def versions = readYaml file: 'versions.yml'
+                    def versionsEnv = versions.collect { service, version -> "${service.replace('-', '_').toUpperCase()}_VERSION=${version}" }.join("\n")
+                    writeFile file: "versions.env", text: versionsEnv
+                    
                     def allServices = ['dhcp-server', 'dns-server', 'squid-proxy']
                     allServices.each { service ->
                         def status = sh(script: "docker inspect --format='{{.State.Health.Status}}' ${service} 2>/dev/null || echo 'unhealthy'", returnStdout: true).trim()
                         if (status != "healthy") {
-                            // UPDATED LOGIC: Use 'up' instead of 'restart' for robustness.
-                            // This will recreate the service if it's unhealthy OR if it's missing entirely.
                             echo "⚠️ Health check failed for ${service} (status: ${status}). Attempting to heal/recreate..."
-                            sh "docker compose up -d --no-deps --force-recreate ${service}"
-                        } else { echo "✅ Health check passed for ${service}." }
+                            // This command will now have the correct environment variables loaded.
+                            sh "set -a; source ${env.WORKSPACE}/versions.env; set +a; docker compose up -d --no-deps --force-recreate ${service}"
+                        } else {
+                            echo "✅ Health check passed for ${service}."
+                        }
                     }
                 }
             }
         }
 
         // -------------------------------
-        // Stage 7: Commit Version File (Runs for BOTH triggers)
+        // Stage 7: Commit Version File (Runs for ALL relevant triggers)
         // -------------------------------
         stage('Commit Version Update') {
-            when { anyOf { triggeredBy 'SCMTrigger'; triggeredBy 'TimerTrigger' } }
+            when {
+                anyOf {
+                    triggeredBy 'SCMTrigger'
+                    triggeredBy 'TimerTrigger'
+                    triggeredBy 'UserIdCause'
+                }
+            }
             steps {
                 script {
                     def gitStatus = sh(script: 'git status --porcelain versions.yml', returnStdout: true).trim()
@@ -225,7 +260,9 @@ pipeline {
                                 git push https://${GIT_USERNAME}:${GIT_PASSWORD}@github.com/Rtx-boii/vcct.git HEAD:vcct-setup
                             """
                         }
-                    } else { echo "No version changes to commit." }
+                    } else {
+                        echo "No version changes to commit."
+                    }
                 }
             }
         }

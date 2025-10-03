@@ -30,9 +30,11 @@ RUN apk add --no-cache bash procps
 ENV LD_LIBRARY_PATH=/lib64:/usr/lib64
 ENV DHCP_INTERFACE=""
 
-# --- HEALTHCHECK IS ADDED HERE ---
 
-
+# health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+CMD pgrep dhcpd || exit 1
+ 
 
 EXPOSE 67/udp 68/udp
 ENTRYPOINT ["/entrypoint.sh"]

@@ -11,6 +11,7 @@ RUN cp /lib64/ld-linux-x86-64.so.2 /runtime/lib64/
 COPY entrypoint.sh /runtime/entrypoint.sh
 RUN chmod +x /runtime/entrypoint.sh
 
+
 FROM alpine AS runner
 
 RUN mkdir -p /usr/sbin /lib64 /etc/dhcp /var/lib/dhcpd
@@ -23,9 +24,16 @@ COPY --from=builder /runtime/etc/dhcp/ /etc/dhcp/
 COPY --from=builder /runtime/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 COPY dhcpd.conf /etc/dhcp/dhcpd.conf
-RUN apk add --no-cache bash
+
+RUN apk add --no-cache bash procps
+
 ENV LD_LIBRARY_PATH=/lib64:/usr/lib64
 ENV DHCP_INTERFACE=""
+
+# --- HEALTHCHECK IS ADDED HERE ---
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD pgrep dhcpd || exit 1
 
 EXPOSE 67/udp 68/udp
 ENTRYPOINT ["/entrypoint.sh"]

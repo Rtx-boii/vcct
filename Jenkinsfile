@@ -25,7 +25,7 @@ pipeline {
         stage('Detect Changes & Prepare for Build') {
             when {
                 anyOf {
-                    triggeredBy 'hudson.plugins.github.GitHubPushCause'
+                    triggeredBy 'com.cloudbees.jenkins.GitHubPushCause'
                     triggeredBy 'SCMPollingCause'
                     triggeredBy 'UserIdCause'
                 }
@@ -65,7 +65,7 @@ pipeline {
         stage('Build and Push New Images') {
             when {
                 anyOf {
-                    triggeredBy 'hudson.plugins.github.GitHubPushCause'
+                    triggeredBy 'com.cloudbees.jenkins.GitHubPushCause'
                     triggeredBy 'SCMPollingCause'
                     triggeredBy 'UserIdCause'
                 }
@@ -80,7 +80,7 @@ pipeline {
         stage('Deploy and Restart Services') {
             when {
                 anyOf {
-                    triggeredBy 'hudson.plugins.github.GitHubPushCause'
+                    triggeredBy 'com.cloudbees.jenkins.GitHubPushCause'
                     triggeredBy 'SCMPollingCause'
                     triggeredBy 'UserIdCause'
                 }
@@ -113,7 +113,7 @@ pipeline {
         stage('Post-Deployment Health Check') {
             when {
                 anyOf {
-                    triggeredBy 'hudson.plugins.github.GitHubPushCause'
+                    triggeredBy 'com.cloudbees.jenkins.GitHubPushCause'
                     triggeredBy 'SCMPollingCause'
                     triggeredBy 'UserIdCause'
                 }
@@ -164,7 +164,7 @@ pipeline {
         stage('Commit Version Update') {
             when {
                 anyOf {
-                    triggeredBy 'hudson.plugins.github.GitHubPushCause'
+                    triggeredBy 'com.cloudbees.jenkins.GitHubPushCause'
                     triggeredBy 'SCMPollingCause'
                     triggeredBy 'TimerTrigger'
                     triggeredBy 'UserIdCause'

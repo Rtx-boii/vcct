@@ -20,13 +20,14 @@ pipeline {
 
         stage('Docker Login') {
             steps {
-                sh "echo ${DOCKER_PASS} | docker login -u ${DOCKER_USER} --password-stdin"
+                sh 'echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin'
             }
         }
 
         stage('Detect Changes') {
             steps {
                 script {
+                    // Get changed files
                     def changedFiles = sh(script: "git diff --name-only HEAD~1 HEAD", returnStdout: true).trim().split("\\n")
                     echo "Changed files: ${changedFiles}"
 
@@ -39,7 +40,7 @@ pipeline {
                         if (file == "docker-compose.yml") {
                             env.COMPOSE_CHANGED = "true"
                         } else if (file == VERSION_FILE) {
-                            // Detect which service versions changed manually
+                            // Detect which services changed version manually
                             def services = ['dhcp-server','dns-server','squid-proxy']
                             for (svc in services) {
                                 def oldVersion = sh(script: "git show HEAD~1:${VERSION_FILE} | yq e '.\"${svc}\"' -", returnStdout: true).trim().toInteger()
@@ -72,13 +73,13 @@ pipeline {
             steps {
                 script {
                     echo "docker-compose.yml changed, redeploying all services..."
-                    sh "docker compose down"
-                    sh """
-                        DHCP_SERVER_VERSION=$(yq e '.\"dhcp-server\"' ${VERSION_FILE}) \
-                        DNS_SERVER_VERSION=$(yq e '.\"dns-server\"' ${VERSION_FILE}) \
-                        SQUID_PROXY_VERSION=$(yq e '.\"squid-proxy\"' ${VERSION_FILE}) \
+                    sh 'docker compose down'
+                    sh '''
+                        DHCP_SERVER_VERSION=$(yq e '.\"dhcp-server\"' version.yml)
+                        DNS_SERVER_VERSION=$(yq e '.\"dns-server\"' version.yml)
+                        SQUID_PROXY_VERSION=$(yq e '.\"squid-proxy\"' version.yml)
                         docker compose up -d
-                    """
+                    '''
                 }
             }
         }
@@ -113,15 +114,12 @@ pipeline {
                             def version = sh(script: "yq e '.\"${svc}\"' ${VERSION_FILE}", returnStdout: true).trim().toInteger()
                             if (version < 1) { version = 1; sh "yq e -i '.\"${svc}\" = 1' ${VERSION_FILE}" }
 
-                            sh "docker build -t ${DOCKER_USER}/${svc}:${version} ${svc}"
+                            sh "docker build -t $DOCKER_USER/${svc}:${version} ${svc}"
                             echo "Pushing ${svc}:${version} to Docker Hub..."
-                            sh "docker push ${DOCKER_USER}/${svc}:${version}"
+                            sh "docker push $DOCKER_USER/${svc}:${version}"
                             echo "Deploying ${svc}:${version} from Docker Hub..."
-                            sh "docker pull ${DOCKER_USER}/${svc}:${version}"
+                            sh "docker pull $DOCKER_USER/${svc}:${version}"
                             sh """
-                                DHCP_SERVER_VERSION=$(yq e '.\"dhcp-server\"' ${VERSION_FILE}) \
-                                DNS_SERVER_VERSION=$(yq e '.\"dns-server\"' ${VERSION_FILE}) \
-                                SQUID_PROXY_VERSION=$(yq e '.\"squid-proxy\"' ${VERSION_FILE}) \
                                 docker compose up -d --force-recreate --no-deps ${svc}
                             """
                         } else {
@@ -149,9 +147,9 @@ pipeline {
                             def currentVersion = sh(script: "yq e '.\"${svc}\"' ${VERSION_FILE}", returnStdout: true).trim().toInteger()
                             def prevVersion = currentVersion - 1
                             if (prevVersion < 1) { prevVersion = currentVersion }
-                            sh "docker pull ${DOCKER_USER}/${svc}:${prevVersion} || true"
+                            sh "docker pull $DOCKER_USER/${svc}:${prevVersion} || true"
                             sh "docker compose down ${svc} || true"
-                            sh "docker run -d --name ${svc} ${DOCKER_USER}/${svc}:${prevVersion}"
+                            sh "docker run -d --name ${svc} $DOCKER_USER/${svc}:${prevVersion}"
                             sh "yq e -i '.\"${svc}\" = ${prevVersion}' ${VERSION_FILE}"
                         }
                     }
@@ -162,7 +160,7 @@ pipeline {
 
     post {
         always {
-            sh "docker logout"
+            sh 'docker logout'
             echo "Pipeline completed."
         }
     }

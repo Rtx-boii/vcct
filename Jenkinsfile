@@ -149,6 +149,7 @@ pipeline {
                     def versionMap = readYaml file: "${VERSION_FILE}"
                     def envVars = services.collect { s -> "${s.toUpperCase().replace('-', '_')}_VERSION=${versionMap[s]}" }.join(' ')
                     sleep 60
+                    
                     for (svc in services) {
                         
                         def state = sh(script: "${envVars} docker inspect -f '{{.State.Running}}' ${svc}", returnStdout: true).trim()

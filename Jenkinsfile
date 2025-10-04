@@ -54,6 +54,9 @@ pipeline {
         // 3. Initial Compose Status Check
         // ========================
         stage('Initial Compose Status Check') {
+             when { 
+                not { triggeredBy 'TimerTrigger' } // Skip on scheduled 10-min trigger
+            }
             steps {
                 script {
                     echo "Checking docker-compose services..."

@@ -4,7 +4,7 @@ pipeline {
     environment {
         REPO_URL = "https://github.com/Rtx-boii/vcct.git"
         BRANCH   = "vcct-setup"
-        VERSION_FILE = "version.yml"
+        VERSION_FILE = "versions.yml"
     }
 
     stages {
@@ -31,7 +31,7 @@ pipeline {
         stage('Test Version Read') {
             steps {
                 script {
-                    def versionMap = readYaml file: 'version.yml'
+                    def versionMap = readYaml file: 'versions.yml'
                     def version = versionMap['dhcp-server']
                     echo "DHCP_SERVER_VERSION: ${version}"
 

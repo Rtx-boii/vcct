@@ -20,14 +20,14 @@ pipeline {
 
         stage('Docker Login') {
             steps {
-                sh 'echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin'
+                sh 'docker logout || true'
+                sh 'echo -n $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin'
             }
         }
 
         stage('Detect Changes') {
             steps {
                 script {
-                    // Get changed files
                     def changedFiles = sh(script: "git diff --name-only HEAD~1 HEAD", returnStdout: true).trim().split("\\n")
                     echo "Changed files: ${changedFiles}"
 
@@ -40,7 +40,6 @@ pipeline {
                         if (file == "docker-compose.yml") {
                             env.COMPOSE_CHANGED = "true"
                         } else if (file == VERSION_FILE) {
-                            // Detect which services changed version manually
                             def services = ['dhcp-server','dns-server','squid-proxy']
                             for (svc in services) {
                                 def oldVersion = sh(script: "git show HEAD~1:${VERSION_FILE} | yq e '.\"${svc}\"' -", returnStdout: true).trim().toInteger()
@@ -103,7 +102,7 @@ pipeline {
                 script {
                     def services = env.TARGET_SERVICES.trim().split(" ")
                     for (svc in services) {
-                        // Only rebuild if Dockerfile or entrypoint.sh changed for this service
+                        // Only rebuild if Dockerfile or entrypoint.sh changed
                         def rebuildFileChanged = sh(
                             script: "git diff --name-only HEAD~1 HEAD | grep -E '^${svc}/(Dockerfile|entrypoint.sh)' || true",
                             returnStdout: true
@@ -119,9 +118,7 @@ pipeline {
                             sh "docker push $DOCKER_USER/${svc}:${version}"
                             echo "Deploying ${svc}:${version} from Docker Hub..."
                             sh "docker pull $DOCKER_USER/${svc}:${version}"
-                            sh """
-                                docker compose up -d --force-recreate --no-deps ${svc}
-                            """
+                            sh "docker compose up -d --force-recreate --no-deps ${svc}"
                         } else {
                             echo "No Dockerfile/entrypoint.sh change for ${svc}, skipping rebuild."
                         }

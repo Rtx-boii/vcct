@@ -14,13 +14,10 @@ pipeline {
     }
 
     stages {
-        // 1. Checkout SCM
         stage('Checkout SCM') {
-            when { 
-                not { triggeredBy 'TimerTrigger' }
-            }
+            when { not { triggeredBy 'TimerTrigger' } }
             steps {
-                echo "Checking out the repository from GitHub..."
+                echo "Checking out repository..."
                 checkout([
                     $class: 'GitSCM',
                     branches: [[name: '*/vcct-setup']],
@@ -32,7 +29,6 @@ pipeline {
             }
         }
 
-        // 2. Docker Login
         stage('Docker Login') {
             steps {
                 withCredentials([usernamePassword(credentialsId: 'docker-hub-creds', usernameVariable: 'DOCKER_USER_ENV', passwordVariable: 'DOCKER_PASS_ENV')]) {
@@ -44,15 +40,10 @@ pipeline {
             }
         }
 
-        // 3. Initial Compose Status Check
         stage('Initial Compose Status Check') {
-            when { 
-                not { triggeredBy 'TimerTrigger' }
-            }
+            when { not { triggeredBy 'TimerTrigger' } }
             steps {
                 script {
-                    echo "Checking docker-compose services..."
-                    
                     def versionMap = [:]
                     if (fileExists("${VERSION_FILE}")) {
                         versionMap = readYaml file: "${VERSION_FILE}"
@@ -72,9 +63,11 @@ pipeline {
                             echo "${svc} is not running, pulling image and starting..."
                             sh "${envVars} docker pull ${DOCKER_USER}/${svc}:${version}"
 
-                            // Remove stale PID if Squid
                             if (svc == 'squid-proxy') {
-                                sh "${envVars} docker exec ${svc} sh -c 'rm -f /var/run/squid.pid || true'"
+                                def exists = sh(script: "docker ps -a -q -f name=${svc}", returnStdout: true).trim()
+                                if (exists) {
+                                    sh "docker exec ${svc} sh -c 'rm -f /var/run/squid.pid || true'"
+                                }
                             }
 
                             sh "${envVars} docker compose up -d ${svc}"
@@ -86,7 +79,6 @@ pipeline {
             }
         }
 
-        // 4. Detect Changes
         stage('Detect Changes') {
             when { 
                 allOf {
@@ -117,7 +109,6 @@ pipeline {
             }
         }
 
-        // 5. Deploy Compose Change
         stage('Deploy Compose Change') {
             when { 
                 allOf {
@@ -133,7 +124,10 @@ pipeline {
                     def envVars = services.collect { s -> "${s.toUpperCase().replace('-', '_')}_VERSION=${versionMap[s]}" }.join(' ')
 
                     if ('squid-proxy' in services) {
-                        sh "${envVars} docker exec squid-proxy sh -c 'rm -f /var/run/squid.pid || true'"
+                        def exists = sh(script: "docker ps -a -q -f name=squid-proxy", returnStdout: true).trim()
+                        if (exists) {
+                            sh "docker exec squid-proxy sh -c 'rm -f /var/run/squid.pid || true'"
+                        }
                     }
 
                     sh "${envVars} docker compose down && ${envVars} docker compose up -d"
@@ -141,7 +135,6 @@ pipeline {
             }
         }
 
-        // 6. Restart Version Changed Services
         stage('Restart Version Changed Services') {
             when { 
                 allOf {
@@ -159,7 +152,10 @@ pipeline {
                         echo "Restarting ${svc} with version ${versionMap[svc]}"
 
                         if (svc == 'squid-proxy') {
-                            sh "${envVars} docker exec ${svc} sh -c 'rm -f /var/run/squid.pid || true'"
+                            def exists = sh(script: "docker ps -a -q -f name=${svc}", returnStdout: true).trim()
+                            if (exists) {
+                                sh "docker exec ${svc} sh -c 'rm -f /var/run/squid.pid || true'"
+                            }
                         }
 
                         sh "${envVars} docker compose up -d ${svc}"
@@ -168,7 +164,6 @@ pipeline {
             }
         }
 
-        // 7. Build, Push & Deploy
         stage('Build, Push & Deploy') {
             when { 
                 allOf {
@@ -194,7 +189,10 @@ pipeline {
                         sh "${envVars} docker push ${DOCKER_USER}/${svc}:${newVersion}"
 
                         if (svc == 'squid-proxy') {
-                            sh "${envVars} docker exec ${svc} sh -c 'rm -f /var/run/squid.pid || true'"
+                            def exists = sh(script: "docker ps -a -q -f name=${svc}", returnStdout: true).trim()
+                            if (exists) {
+                                sh "docker exec ${svc} sh -c 'rm -f /var/run/squid.pid || true'"
+                            }
                         }
 
                         sh "${envVars} docker compose up -d ${svc}"
@@ -203,11 +201,8 @@ pipeline {
             }
         }
 
-        // 8. Periodic Health Check & Auto-Restart
         stage('Periodic Health Check & Auto-Restart') {
-            when { 
-                not { triggeredBy 'UserIdCause' }
-            }
+            when { not { triggeredBy 'UserIdCause' } }
             steps {
                 script {
                     def services = ['dhcp-server','dns-server','squid-proxy']
@@ -228,7 +223,10 @@ pipeline {
                             echo "${svc} is not healthy! Restarting..."
 
                             if (svc == 'squid-proxy') {
-                                sh "${envVars} docker exec ${svc} sh -c 'rm -f /var/run/squid.pid || true'"
+                                def exists = sh(script: "docker ps -a -q -f name=${svc}", returnStdout: true).trim()
+                                if (exists) {
+                                    sh "docker exec ${svc} sh -c 'rm -f /var/run/squid.pid || true'"
+                                }
                             }
 
                             sh "${envVars} docker compose up -d ${svc}"
@@ -247,11 +245,8 @@ pipeline {
             }
         }
 
-        // 9. Health Check & Rollback
         stage('Health Check & Rollback') {
-            when { 
-                not { triggeredBy 'TimerTrigger' }
-            }
+            when { not { triggeredBy 'TimerTrigger' } }
             steps {
                 script {
                     def services = ['dhcp-server','dns-server','squid-proxy']
@@ -265,7 +260,10 @@ pipeline {
                             def prevVersion = versionMap[svc].toInteger() - 1
 
                             if (svc == 'squid-proxy') {
-                                sh "${envVars} docker exec ${svc} sh -c 'rm -f /var/run/squid.pid || true'"
+                                def exists = sh(script: "docker ps -a -q -f name=${svc}", returnStdout: true).trim()
+                                if (exists) {
+                                    sh "docker exec ${svc} sh -c 'rm -f /var/run/squid.pid || true'"
+                                }
                             }
 
                             sh "${envVars} docker pull ${DOCKER_USER}/${svc}:${prevVersion}"

@@ -1,6 +1,11 @@
 pipeline {
     agent any
 
+    // Scheduled trigger: every 10 minutes
+    triggers {
+        cron('H/10 * * * *')
+    }
+
     environment {
         DOCKER_USER = 'nilessh'
         VERSION_FILE = 'versions.yml'
@@ -9,15 +14,31 @@ pipeline {
     }
 
     stages {
+        // ========================
+        // 1. Checkout SCM
+        // ========================
         stage('Checkout SCM') {
+            when { 
+                allOf {
+                    not { triggeredBy 'TimerTrigger' } // Skip on scheduled 10-min trigger
+                }
+            }
             steps {
-                checkout([$class: 'GitSCM',
+                echo "Checking out the repository from GitHub..."
+                checkout([
+                    $class: 'GitSCM',
                     branches: [[name: '*/vcct-setup']],
-                    userRemoteConfigs: [[url: 'https://github.com/Rtx-boii/vcct.git', credentialsId: 'github-creds']]
+                    userRemoteConfigs: [[
+                        url: 'https://github.com/Rtx-boii/vcct.git',
+                        credentialsId: 'github-creds'
+                    ]]
                 ])
             }
         }
 
+        // ========================
+        // 2. Docker Login
+        // ========================
         stage('Docker Login') {
             steps {
                 withCredentials([usernamePassword(credentialsId: 'docker-hub-creds', usernameVariable: 'DOCKER_USER_ENV', passwordVariable: 'DOCKER_PASS_ENV')]) {
@@ -29,6 +50,9 @@ pipeline {
             }
         }
 
+        // ========================
+        // 3. Initial Compose Status Check
+        // ========================
         stage('Initial Compose Status Check') {
             steps {
                 script {
@@ -42,18 +66,11 @@ pipeline {
                     def services = ['dhcp-server','dns-server','squid-proxy']
 
                     for (svc in services) {
-                        def version = versionMap[svc]
-                        if (!version || version.toInteger() < 1) {
-                            version = '1'
-                            versionMap[svc] = version
-                        }
-
-                        // Update versions.yml safely
+                        def version = versionMap[svc] ?: '1'
+                        versionMap[svc] = version
                         writeYaml file: "${VERSION_FILE}", data: versionMap, overwrite: true
 
-                        // Export version for Docker Compose
                         def envVars = services.collect { s -> "${s.toUpperCase().replace('-', '_')}_VERSION=${versionMap[s]}" }.join(' ')
-                        
                         def containerId = sh(script: "${envVars} docker compose ps -q ${svc}", returnStdout: true).trim()
                         if (!containerId) {
                             echo "${svc} is not running, pulling image and starting..."
@@ -67,7 +84,16 @@ pipeline {
             }
         }
 
+        // ========================
+        // 4. Detect Changes
+        // ========================
         stage('Detect Changes') {
+            when { 
+                allOf {
+                    not { triggeredBy 'TimerTrigger' } // Skip on 10-min trigger
+                    not { triggeredBy 'UserIdCause' } // Skip on manual trigger
+                }
+            }
             steps {
                 script {
                     def changedFiles = sh(script: "git diff --name-only HEAD~1 HEAD", returnStdout: true).trim().split("\n")
@@ -91,8 +117,17 @@ pipeline {
             }
         }
 
+        // ========================
+        // 5. Deploy Compose Change
+        // ========================
         stage('Deploy Compose Change') {
-            when { expression { env.COMPOSE_CHANGED == 'true' } }
+            when { 
+                allOf {
+                    expression { env.COMPOSE_CHANGED == 'true' }
+                    not { triggeredBy 'TimerTrigger' } // Skip 10-min trigger
+                    not { triggeredBy 'UserIdCause' } // Skip manual trigger
+                }
+            }
             steps {
                 script {
                     def versionMap = readYaml file: "${VERSION_FILE}"
@@ -103,8 +138,17 @@ pipeline {
             }
         }
 
+        // ========================
+        // 6. Restart Version Changed Services
+        // ========================
         stage('Restart Version Changed Services') {
-            when { expression { env.VERSION_CHANGED == 'true' } }
+            when { 
+                allOf {
+                    expression { env.VERSION_CHANGED == 'true' }
+                    not { triggeredBy 'TimerTrigger' }
+                    not { triggeredBy 'UserIdCause' }
+                }
+            }
             steps {
                 script {
                     def versionMap = readYaml file: "${VERSION_FILE}"
@@ -119,8 +163,17 @@ pipeline {
             }
         }
 
+        // ========================
+        // 7. Build, Push & Deploy
+        // ========================
         stage('Build, Push & Deploy') {
-            when { expression { env.REBUILD_SERVICES?.trim() } }
+            when { 
+                allOf {
+                    expression { env.REBUILD_SERVICES?.trim() }
+                    not { triggeredBy 'TimerTrigger' }
+                    not { triggeredBy 'UserIdCause' }
+                }
+            }
             steps {
                 script {
                     def servicesToBuild = env.REBUILD_SERVICES.trim().split(" ")
@@ -142,16 +195,59 @@ pipeline {
             }
         }
 
+        // ========================
+        // 8. Periodic Health Check & Auto-Restart
+        // ========================
+        stage('Periodic Health Check & Auto-Restart') {
+            steps {
+                script {
+                    def services = ['dhcp-server','dns-server','squid-proxy']
+                    def versionMap = readYaml file: "${VERSION_FILE}"
+                    def envVars = services.collect { s -> "${s.toUpperCase().replace('-', '_')}_VERSION=${versionMap[s]}" }.join(' ')
+
+                    for (svc in services) {
+                        echo "Checking health for ${svc}..."
+                        def running = sh(script: "${envVars} docker inspect -f '{{.State.Running}}' ${svc}", returnStdout: true).trim()
+
+                        def healthy = ''
+                        try {
+                            healthy = sh(script: "${envVars} docker inspect -f '{{.State.Health.Status}}' ${svc}", returnStdout: true).trim()
+                        } catch(Exception e) {
+                            healthy = 'unknown'
+                        }
+
+                        if (running != 'true' || healthy == 'unhealthy') {
+                            echo "${svc} is not healthy! Restarting..."
+                            sh "${envVars} docker compose up -d ${svc}"
+                            sleep 15
+                            def recheck = sh(script: "${envVars} docker inspect -f '{{.State.Running}}' ${svc}", returnStdout: true).trim()
+                            if (recheck != 'true') {
+                                echo "Failed to restart ${svc}, please check manually!"
+                            } else {
+                                echo "${svc} restarted successfully."
+                            }
+                        } else {
+                            echo "${svc} is healthy."
+                        }
+                    }
+                }
+            }
+        }
+
+        // ========================
+        // 9. Health Check & Rollback
+        // ========================
         stage('Health Check & Rollback') {
+            when { 
+                not { triggeredBy 'TimerTrigger' } // Skip 10-min trigger
+            }
             steps {
                 script {
                     def services = ['dhcp-server','dns-server','squid-proxy']
                     def versionMap = readYaml file: "${VERSION_FILE}"
                     def envVars = services.collect { s -> "${s.toUpperCase().replace('-', '_')}_VERSION=${versionMap[s]}" }.join(' ')
                     sleep 60
-                    
                     for (svc in services) {
-                        
                         def state = sh(script: "${envVars} docker inspect -f '{{.State.Running}}' ${svc}", returnStdout: true).trim()
                         if (state != 'true') {
                             echo "${svc} is not healthy! Rolling back..."

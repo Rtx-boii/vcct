@@ -29,6 +29,30 @@ pipeline {
             }
         }
 
+        stage('Initial Compose Status Check') {
+            steps {
+                script {
+                    echo "Checking docker-compose services..."
+                    def services = ['dhcp-server','dns-server','squid-proxy']
+                    for (svc in services) {
+                        def containerId = sh(script: "docker compose ps -q ${svc}", returnStdout: true).trim()
+                        if (!containerId) {
+                            echo "${svc} is not running, starting with version from ${VERSION_FILE}..."
+                            def version = sh(script: "yq e '.\"${svc}\"' ${VERSION_FILE}", returnStdout: true).trim()
+                            if (version.toInteger() < 1) {
+                                version = '1'
+                                sh "yq e -i '.\"${svc}\" = 1' ${VERSION_FILE}"
+                            }
+                            sh "docker pull $DOCKER_USER/${svc}:${version}"
+                            sh "docker compose up -d ${svc}"
+                        } else {
+                            echo "${svc} is already running."
+                        }
+                    }
+                }
+            }
+        }
+
         stage('Detect Changes') {
             steps {
                 script {
@@ -67,6 +91,11 @@ pipeline {
                             env.TARGET_SERVICES += "${svc} "
                         }
                     }
+
+                    echo "COMPOSE_CHANGED=${COMPOSE_CHANGED}"
+                    echo "VERSION_CHANGED=${VERSION_CHANGED}"
+                    echo "REBUILD=${REBUILD}"
+                    echo "TARGET_SERVICES=${TARGET_SERVICES}"
                 }
             }
         }
@@ -114,8 +143,11 @@ pipeline {
 
                         if (rebuildFileChanged) {
                             echo "Building ${svc} because Dockerfile/entrypoint.sh changed..."
-                            def version = sh(script: "yq e '.\"${svc}\"' ${VERSION_FILE}", returnStdout: true).trim().toInteger()
-                            if (version < 1) { version = 1; sh "yq e -i '.\"${svc}\" = 1' ${VERSION_FILE}" }
+                            def version = sh(script: "yq e '.\"${svc}\"' ${VERSION_FILE}", returnStdout: true).trim()
+                            if (version.toInteger() < 1) { 
+                                version = '1' 
+                                sh "yq e -i '.\"${svc}\" = 1' ${VERSION_FILE}" 
+                            }
 
                             sh "docker build -t $DOCKER_USER/${svc}:${version} ${svc}"
                             echo "Pushing ${svc}:${version} to Docker Hub..."

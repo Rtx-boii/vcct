@@ -31,9 +31,10 @@ pipeline {
         stage('Test Version Read') {
             steps {
                 script {
-                    echo "VERSION_FILE=$VERSION_FILE"
-                    def version = sh(script: "yq e '.\"dhcp-server\"' $VERSION_FILE", returnStdout: true).trim()
-                    echo "DHCP_SERVER_VERSION from version.yml: ${version}"
+                    def versionMap = readYaml file: 'version.yml'
+                    def version = versionMap['dhcp-server']
+                    echo "DHCP_SERVER_VERSION: ${version}"
+
                 }
             }
         }

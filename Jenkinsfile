@@ -22,9 +22,24 @@ pipeline {
             steps {
                 withCredentials([usernamePassword(credentialsId: 'docker-hub-creds', usernameVariable: 'DOCKER_USER_ENV', passwordVariable: 'DOCKER_PASS_ENV')]) {
                     sh """
-                        docker logout
+                        docker logout || true
                         echo \$DOCKER_PASS_ENV | docker login -u \$DOCKER_USER_ENV --password-stdin
                     """
+                }
+            }
+        }
+
+        stage('Cleanup Old Containers') {
+            steps {
+                script {
+                    def services = ['dhcp-server','dns-server','squid-proxy']
+                    for (svc in services) {
+                        def containerId = sh(script: "docker ps -aq -f name=^${svc}\$", returnStdout: true).trim()
+                        if (containerId) {
+                            echo "Removing old container ${svc}..."
+                            sh "docker rm -f ${containerId}"
+                        }
+                    }
                 }
             }
         }
@@ -33,36 +48,33 @@ pipeline {
             steps {
                 script {
                     echo "Checking docker-compose services..."
-                    
                     def versionMap = [:]
                     if (fileExists("${VERSION_FILE}")) {
                         versionMap = readYaml file: "${VERSION_FILE}"
                     }
 
                     def services = ['dhcp-server','dns-server','squid-proxy']
-
                     for (svc in services) {
                         def version = versionMap[svc]
                         if (!version || version.toInteger() < 1) {
                             version = '1'
                             versionMap[svc] = version
+                            writeYaml file: "${VERSION_FILE}", data: versionMap, overwrite: true
                         }
 
-                        // Update versions.yml safely
-                        writeYaml file: "${VERSION_FILE}", data: versionMap, overwrite: true
-
-                        // Export version for Docker Compose
-                        def envVars = services.collect { s -> "${s.toUpperCase().replace('-', '_')}_VERSION=${versionMap[s]}" }.join(' ')
-                        
-                        def containerId = sh(script: "${envVars} docker compose ps -q ${svc}", returnStdout: true).trim()
-                        if (!containerId) {
-                            echo "${svc} is not running, pulling image and starting..."
-                            sh "${envVars} docker pull ${DOCKER_USER}/${svc}:${version}"
-                            sh "${envVars} docker compose up -d ${svc}"
-                        } else {
-                            echo "${svc} is already running."
-                        }
+                        // Export versions as environment variables for Compose
+                        env."${svc.toUpperCase().replace('-', '_')}_VERSION" = version
                     }
+                }
+            }
+        }
+
+        stage('Start Services') {
+            steps {
+                script {
+                    echo "Starting all services via Docker Compose..."
+                    sh "docker compose pull"
+                    sh "docker compose up -d"
                 }
             }
         }
@@ -94,12 +106,7 @@ pipeline {
         stage('Deploy Compose Change') {
             when { expression { env.COMPOSE_CHANGED == 'true' } }
             steps {
-                script {
-                    def versionMap = readYaml file: "${VERSION_FILE}"
-                    def services = ['dhcp-server','dns-server','squid-proxy']
-                    def envVars = services.collect { s -> "${s.toUpperCase().replace('-', '_')}_VERSION=${versionMap[s]}" }.join(' ')
-                    sh "${envVars} docker compose down && ${envVars} docker compose up -d"
-                }
+                sh "docker compose down && docker compose up -d"
             }
         }
 
@@ -108,12 +115,11 @@ pipeline {
             steps {
                 script {
                     def versionMap = readYaml file: "${VERSION_FILE}"
-                    def services = versionMap.keySet().toList()
-                    def envVars = services.collect { s -> "${s.toUpperCase().replace('-', '_')}_VERSION=${versionMap[s]}" }.join(' ')
-                    for (svc in services) {
-                        echo "Restarting ${svc} with version ${versionMap[svc]}"
-                        sh "${envVars} docker pull ${DOCKER_USER}/${svc}:${versionMap[svc]}"
-                        sh "${envVars} docker compose up -d ${svc}"
+                    for (svc in versionMap.keySet()) {
+                        def version = versionMap[svc]
+                        echo "Restarting ${svc} with version ${version}"
+                        sh "docker pull ${DOCKER_USER}/${svc}:${version}"
+                        sh "docker compose up -d ${svc}"
                     }
                 }
             }
@@ -125,18 +131,17 @@ pipeline {
                 script {
                     def servicesToBuild = env.REBUILD_SERVICES.trim().split(" ")
                     def versionMap = readYaml file: "${VERSION_FILE}"
-                    def services = ['dhcp-server','dns-server','squid-proxy']
 
                     for (svc in servicesToBuild) {
-                        def newVersion = versionMap[svc].toInteger() + 1
-                        versionMap[svc] = newVersion
+                        // Increment version
+                        def version = versionMap[svc].toInteger() + 1
+                        versionMap[svc] = version
                         writeYaml file: "${VERSION_FILE}", data: versionMap, overwrite: true
 
-                        def envVars = services.collect { s -> "${s.toUpperCase().replace('-', '_')}_VERSION=${versionMap[s]}" }.join(' ')
-                        echo "Building ${svc} image with version ${newVersion}"
-                        sh "${envVars} docker build -t ${DOCKER_USER}/${svc}:${newVersion} ./${svc}"
-                        sh "${envVars} docker push ${DOCKER_USER}/${svc}:${newVersion}"
-                        sh "${envVars} docker compose up -d ${svc}"
+                        echo "Building ${svc} image with version ${version}"
+                        sh "docker build -t ${DOCKER_USER}/${svc}:${version} ./${svc}"
+                        sh "docker push ${DOCKER_USER}/${svc}:${version}"
+                        sh "docker compose up -d ${svc}"
                     }
                 }
             }
@@ -147,16 +152,14 @@ pipeline {
                 script {
                     def services = ['dhcp-server','dns-server','squid-proxy']
                     def versionMap = readYaml file: "${VERSION_FILE}"
-                    def envVars = services.collect { s -> "${s.toUpperCase().replace('-', '_')}_VERSION=${versionMap[s]}" }.join(' ')
-
                     for (svc in services) {
                         sleep 60
-                        def state = sh(script: "${envVars} docker inspect -f '{{.State.Running}}' ${svc}", returnStdout: true).trim()
+                        def state = sh(script: "docker inspect -f '{{.State.Running}}' ${svc}", returnStdout: true).trim()
                         if (state != 'true') {
                             echo "${svc} is not healthy! Rolling back..."
                             def prevVersion = versionMap[svc].toInteger() - 1
-                            sh "${envVars} docker pull ${DOCKER_USER}/${svc}:${prevVersion}"
-                            sh "${envVars} docker compose up -d ${svc}"
+                            sh "docker pull ${DOCKER_USER}/${svc}:${prevVersion}"
+                            sh "docker compose up -d ${svc}"
                             versionMap[svc] = prevVersion
                             writeYaml file: "${VERSION_FILE}", data: versionMap, overwrite: true
                         } else {

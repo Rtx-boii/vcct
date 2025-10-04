@@ -5,8 +5,6 @@ pipeline {
         REPO_URL = "https://github.com/Rtx-boii/vcct.git"
         BRANCH   = "vcct-setup"
         VERSION_FILE = "version.yml"
-        DOCKER_USER  = "nilessh"
-        DOCKER_PASS  = credentials('docker-hub-creds')
     }
 
     stages {
@@ -20,8 +18,14 @@ pipeline {
 
         stage('Docker Login') {
             steps {
-                sh 'docker logout || true'
-                sh 'echo -n $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin'
+                withCredentials([usernamePassword(
+                    credentialsId: 'docker-hub-creds', 
+                    usernameVariable: 'DOCKER_USER', 
+                    passwordVariable: 'DOCKER_PASS'
+                )]) {
+                    sh 'docker logout || true'
+                    sh 'echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin'
+                }
             }
         }
 

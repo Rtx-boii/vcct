@@ -44,9 +44,11 @@ pipeline {
                         if (!version || version.toInteger() < 1) {
                             version = '1'
                             versionMap[svc] = version
+                            // Overwrite existing versions.yml safely
                             writeYaml file: "${VERSION_FILE}", data: versionMap, overwrite: true
                         }
 
+                        // Export versions as environment variables to avoid Docker Compose warnings
                         env."${svc.toUpperCase().replace('-', '_')}_VERSION" = version
 
                         def containerId = sh(script: "docker compose ps -q ${svc}", returnStdout: true).trim()
@@ -116,7 +118,7 @@ pipeline {
                     def versionMap = readYaml file: "${VERSION_FILE}"
 
                     for (svc in servicesToBuild) {
-                        // Increment version
+                        // Increment version safely
                         def version = versionMap[svc].toInteger() + 1
                         versionMap[svc] = version
                         writeYaml file: "${VERSION_FILE}", data: versionMap, overwrite: true

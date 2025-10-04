@@ -100,7 +100,11 @@ pipeline {
 
                     def serviceFolders = ['dhcp-server','dns-server','squid-proxy']
                     for (svc in serviceFolders) {
-                        if (changedFiles.any { it.startsWith("${svc}/Dockerfile") || it.startsWith("${svc}/entrypoint.sh") }) {
+                        if (changedFiles.any { 
+                            it.startsWith("${svc}/Dockerfile") || 
+                            it.startsWith("${svc}/entrypoint.sh") || 
+                            it.startsWith("${svc}/start-squid.sh") 
+                        }) {
                             env.REBUILD_SERVICES += "${svc} "
                         } else if (changedFiles.any { it.startsWith("${svc}/") }) {
                             env.RESTART_SERVICES += "${svc} "

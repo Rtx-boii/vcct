@@ -2,172 +2,159 @@ pipeline {
     agent any
 
     environment {
+        REPO_URL = "https://github.com/Rtx-boii/vcct.git"
+        BRANCH   = "vcct-setup"
+        VERSION_FILE = "version.yml"
         DOCKER_USER  = "nilessh"
         DOCKER_PASS  = credentials('docker-hub-creds')
-        GITHUB_CREDS = credentials('github-creds')
-    }
-
-    triggers {
-        // Health check every 10 minutes
-        cron('H/10 * * * *')
     }
 
     stages {
-        stage('Checkout SCM') {
+        stage('Checkout') {
             steps {
-                checkout([$class: 'GitSCM',
-                    branches: [[name: '*/vcct-setup']],
-                    doGenerateSubmoduleConfigurations: false,
-                    extensions: [[$class: 'CloneOption', shallow: true, depth: 2]],
-                    userRemoteConfigs: [[
-                        credentialsId: 'github-creds',
-                        url: 'https://github.com/Rtx-boii/vcct.git'
-                    ]]
-                ])
+                git branch: "${BRANCH}", 
+                    url: "${REPO_URL}", 
+                    credentialsId: "github-creds"
+            }
+        }
+
+        stage('Docker Login') {
+            steps {
+                sh "echo ${DOCKER_PASS} | docker login -u ${DOCKER_USER} --password-stdin"
             }
         }
 
         stage('Detect Changes') {
-            when { not { triggeredBy 'TimerTrigger' } }
             steps {
                 script {
-                    def SERVICES = ['dhcp-server', 'dns-server', 'squid-proxy']
+                    def changedFiles = sh(script: "git diff --name-only HEAD~1 HEAD", returnStdout: true).trim().split("\\n")
+                    echo "Changed files: ${changedFiles}"
 
-                    // Changed files between last two commits (safe for first run)
-                    def CHANGED_FILES = sh(
-                        script: "git diff-tree --no-commit-id --name-only -r HEAD~1 HEAD || true",
-                        returnStdout: true
-                    ).trim().split("\n")
-                    echo "Changed files: ${CHANGED_FILES}"
+                    env.TARGET_SERVICES = ""
+                    env.REBUILD = "false"
+                    env.COMPOSE_CHANGED = "false"
+                    env.VERSION_CHANGED = ""
 
-                    def BUILD_SERVICES = []
-                    def RESTART_SERVICES = []
-
-                    SERVICES.each { svc ->
-                        def dockerfileChanged = CHANGED_FILES.any { it == "${svc}/Dockerfile" }
-                        def entrypointChanged = CHANGED_FILES.any {
-                            it.startsWith("${svc}/entrypoint") || it.startsWith("${svc}/start-squid.sh")
-                        }
-
-                        if (dockerfileChanged || entrypointChanged) {
-                            BUILD_SERVICES.add(svc)
-                        } else if (CHANGED_FILES.any { it.startsWith("${svc}/") }) {
-                            RESTART_SERVICES.add(svc)
+                    for (file in changedFiles) {
+                        if (file == "docker-compose.yml") {
+                            env.COMPOSE_CHANGED = "true"
+                        } else if (file == VERSION_FILE) {
+                            // Detect which service versions changed manually
+                            def services = ['dhcp-server','dns-server','squid-proxy']
+                            for (svc in services) {
+                                def oldVersion = sh(script: "git show HEAD~1:${VERSION_FILE} | yq e '.\"${svc}\"' -", returnStdout: true).trim().toInteger()
+                                def newVersion = sh(script: "yq e '.\"${svc}\"' ${VERSION_FILE}", returnStdout: true).trim().toInteger()
+                                if (newVersion < 1) {
+                                    echo "Version for ${svc} below minimum, forcing to 1."
+                                    sh "yq e -i '.\"${svc}\" = 1' ${VERSION_FILE}"
+                                    newVersion = 1
+                                }
+                                if (oldVersion != newVersion) {
+                                    echo "Detected version change for ${svc}: ${oldVersion} -> ${newVersion}"
+                                    env.VERSION_CHANGED += "${svc} "
+                                }
+                            }
+                        } else if (file.endsWith("Dockerfile") || file.endsWith("entrypoint.sh")) {
+                            env.REBUILD = "true"
+                            def svc = file.split("/")[0]
+                            env.TARGET_SERVICES += "${svc} "
+                        } else if (file.startsWith("dhcp-server/") || file.startsWith("dns-server/") || file.startsWith("squid-proxy/")) {
+                            def svc = file.split("/")[0]
+                            env.TARGET_SERVICES += "${svc} "
                         }
                     }
-
-                    echo "Services to Build: ${BUILD_SERVICES}"
-                    echo "Services to Restart: ${RESTART_SERVICES}"
-
-                    writeFile file: 'build-services.txt', text: BUILD_SERVICES.join('\n')
-                    writeFile file: 'restart-services.txt', text: RESTART_SERVICES.join('\n')
                 }
             }
         }
 
-        stage('Build and Push Images') {
-            when {
-                expression { return fileExists('build-services.txt') && readFile('build-services.txt').trim() != '' }
-            }
+        stage('Deploy Compose Change') {
+            when { expression { return env.COMPOSE_CHANGED == "true" } }
             steps {
                 script {
+                    echo "docker-compose.yml changed, redeploying all services..."
+                    sh "docker compose down"
                     sh """
-                        set -a
-                        [ -f \$WORKSPACE/versions.env ] || touch \$WORKSPACE/versions.env
-                        . \$WORKSPACE/versions.env
+                        DHCP_SERVER_VERSION=$(yq e '.\"dhcp-server\"' ${VERSION_FILE}) \
+                        DNS_SERVER_VERSION=$(yq e '.\"dns-server\"' ${VERSION_FILE}) \
+                        SQUID_PROXY_VERSION=$(yq e '.\"squid-proxy\"' ${VERSION_FILE}) \
+                        docker compose up -d
                     """
+                }
+            }
+        }
 
-                    // Docker login
-                    sh "echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin"
+        stage('Restart Version Changed Services') {
+            when { expression { return env.VERSION_CHANGED?.trim() } }
+            steps {
+                script {
+                    def services = env.VERSION_CHANGED.trim().split(" ")
+                    for (svc in services) {
+                        echo "Restarting ${svc} due to manual version change..."
+                        sh "docker compose restart ${svc}"
+                    }
+                }
+            }
+        }
 
-                    def buildServices = readFile('build-services.txt').trim().split("\n")
-                    buildServices.each { svc ->
-                        def versionVar = svc.toUpperCase().replace('-', '_') + "_VERSION"
-                        def version = sh(
-                            script: "grep -E '^${versionVar}=' \$WORKSPACE/versions.env | cut -d '=' -f2 || true",
+        stage('Build, Push & Deploy') {
+            when { expression { return env.REBUILD == "true" } }
+            steps {
+                script {
+                    def services = env.TARGET_SERVICES.trim().split(" ")
+                    for (svc in services) {
+                        // Only rebuild if Dockerfile or entrypoint.sh changed for this service
+                        def rebuildFileChanged = sh(
+                            script: "git diff --name-only HEAD~1 HEAD | grep -E '^${svc}/(Dockerfile|entrypoint.sh)' || true",
                             returnStdout: true
                         ).trim()
 
-                        if (version.isInteger()) {
-                            version = version.toInteger() + 1
+                        if (rebuildFileChanged) {
+                            echo "Building ${svc} because Dockerfile/entrypoint.sh changed..."
+                            def version = sh(script: "yq e '.\"${svc}\"' ${VERSION_FILE}", returnStdout: true).trim().toInteger()
+                            if (version < 1) { version = 1; sh "yq e -i '.\"${svc}\" = 1' ${VERSION_FILE}" }
+
+                            sh "docker build -t ${DOCKER_USER}/${svc}:${version} ${svc}"
+                            echo "Pushing ${svc}:${version} to Docker Hub..."
+                            sh "docker push ${DOCKER_USER}/${svc}:${version}"
+                            echo "Deploying ${svc}:${version} from Docker Hub..."
+                            sh "docker pull ${DOCKER_USER}/${svc}:${version}"
+                            sh """
+                                DHCP_SERVER_VERSION=$(yq e '.\"dhcp-server\"' ${VERSION_FILE}) \
+                                DNS_SERVER_VERSION=$(yq e '.\"dns-server\"' ${VERSION_FILE}) \
+                                SQUID_PROXY_VERSION=$(yq e '.\"squid-proxy\"' ${VERSION_FILE}) \
+                                docker compose up -d --force-recreate --no-deps ${svc}
+                            """
                         } else {
-                            version = 1
+                            echo "No Dockerfile/entrypoint.sh change for ${svc}, skipping rebuild."
                         }
-
-                        sh "docker build -t ${DOCKER_USER}/${svc}:${version} ./${svc}"
-                        sh "docker push ${DOCKER_USER}/${svc}:${version}"
-
-                        // Update env file
-                        sh "grep -v '^${versionVar}=' \$WORKSPACE/versions.env > \$WORKSPACE/versions.env.tmp || true"
-                        sh "echo ${versionVar}=${version} >> \$WORKSPACE/versions.env.tmp"
-                        sh "mv \$WORKSPACE/versions.env.tmp \$WORKSPACE/versions.env"
                     }
                 }
             }
         }
 
-        stage('Deploy Services') {
+        stage('Health Check & Rollback') {
+            when { expression { return env.TARGET_SERVICES?.trim() || env.VERSION_CHANGED?.trim() || env.COMPOSE_CHANGED == "true" } }
             steps {
                 script {
-                    sh """
-                        set -a
-                        [ -f \$WORKSPACE/versions.env ] || touch \$WORKSPACE/versions.env
-                        . \$WORKSPACE/versions.env
-                    """
+                    def services = (env.TARGET_SERVICES + " " + env.VERSION_CHANGED).trim().split(" ").unique()
+                    for (svc in services) {
+                        echo "Waiting 60s for ${svc} to stabilize..."
+                        sleep 60
+                        def containerId = sh(script: "docker compose ps -q ${svc}", returnStdout: true).trim()
+                        def healthy = sh(script: "docker inspect --format='{{.State.Health.Status}}' ${containerId} || echo 'unknown'", returnStdout: true).trim()
+                        echo "${svc} health: ${healthy}"
 
-                    def restartServices = fileExists('restart-services.txt') ? readFile('restart-services.txt').trim().split("\n") : []
-                    def buildServices   = fileExists('build-services.txt') ? readFile('build-services.txt').trim().split("\n") : []
-                    def deployServices  = (restartServices + buildServices).findAll { it?.trim() }.unique()
-
-                    if (deployServices && deployServices.size() > 0) {
-                        deployServices.each { svc ->
-                            sh "docker compose up -d --no-deps --force-recreate ${svc}"
+                        if (healthy != "healthy" && healthy != "running") {
+                            echo "Rollback triggered for ${svc}"
+                            def currentVersion = sh(script: "yq e '.\"${svc}\"' ${VERSION_FILE}", returnStdout: true).trim().toInteger()
+                            def prevVersion = currentVersion - 1
+                            if (prevVersion < 1) { prevVersion = currentVersion }
+                            sh "docker pull ${DOCKER_USER}/${svc}:${prevVersion} || true"
+                            sh "docker compose down ${svc} || true"
+                            sh "docker run -d --name ${svc} ${DOCKER_USER}/${svc}:${prevVersion}"
+                            sh "yq e -i '.\"${svc}\" = ${prevVersion}' ${VERSION_FILE}"
                         }
-                    } else {
-                        echo "No services to deploy."
                     }
-                }
-            }
-        }
-
-        stage('Update versions.yml in repo') {
-            when { not { triggeredBy 'TimerTrigger' } }
-            steps {
-                script {
-                    if (fileExists('versions.env')) {
-                        def versionsMap = [:]
-                        def content = readFile('versions.env').trim().split("\n")
-                        content.each { line ->
-                            def parts = line.split('=')
-                            if (parts.size() == 2) {
-                                versionsMap[parts[0]] = parts[1]
-                            }
-                        }
-
-                        // Safely overwrite versions.yml
-                        if (fileExists('versions.yml')) {
-                            sh "rm -f versions.yml"
-                        }
-                        writeYaml file: 'versions.yml', data: versionsMap
-
-                        sh """
-                            git config user.email "jenkins@vcct.com"
-                            git config user.name "Jenkins"
-                            git add versions.yml
-                            git commit -m "Update versions.yml by pipeline" || echo "No changes to commit"
-                            git push origin vcct-setup
-                        """
-                    }
-                }
-            }
-        }
-
-        stage('Health Monitoring (TimerTrigger)') {
-            when { triggeredBy 'TimerTrigger' }
-            steps {
-                script {
-                    sh "docker ps -a"
-                    sh "docker compose ps"
                 }
             }
         }
@@ -175,11 +162,8 @@ pipeline {
 
     post {
         always {
-            sh "rm -f build-services.txt restart-services.txt"
-            archiveArtifacts artifacts: 'versions.env', onlyIfSuccessful: true
-        }
-        failure {
-            echo "Pipeline failed. Rollback or manual intervention may be required."
+            sh "docker logout"
+            echo "Pipeline completed."
         }
     }
 }

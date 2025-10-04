@@ -14,14 +14,10 @@ pipeline {
     }
 
     stages {
-        // ========================
         // 1. Checkout SCM
-        // ========================
         stage('Checkout SCM') {
             when { 
-                allOf {
-                    not { triggeredBy 'TimerTrigger' } // Skip on scheduled 10-min trigger
-                }
+                not { triggeredBy 'TimerTrigger' } // Skip on 10-min schedule
             }
             steps {
                 echo "Checking out the repository from GitHub..."
@@ -36,9 +32,7 @@ pipeline {
             }
         }
 
-        // ========================
         // 2. Docker Login
-        // ========================
         stage('Docker Login') {
             steps {
                 withCredentials([usernamePassword(credentialsId: 'docker-hub-creds', usernameVariable: 'DOCKER_USER_ENV', passwordVariable: 'DOCKER_PASS_ENV')]) {
@@ -50,12 +44,10 @@ pipeline {
             }
         }
 
-        // ========================
         // 3. Initial Compose Status Check
-        // ========================
         stage('Initial Compose Status Check') {
-             when { 
-                not { triggeredBy 'TimerTrigger' } // Skip on scheduled 10-min trigger
+            when { 
+                not { triggeredBy 'TimerTrigger' } // Skip on 10-min schedule
             }
             steps {
                 script {
@@ -75,9 +67,16 @@ pipeline {
 
                         def envVars = services.collect { s -> "${s.toUpperCase().replace('-', '_')}_VERSION=${versionMap[s]}" }.join(' ')
                         def containerId = sh(script: "${envVars} docker compose ps -q ${svc}", returnStdout: true).trim()
+
                         if (!containerId) {
                             echo "${svc} is not running, pulling image and starting..."
                             sh "${envVars} docker pull ${DOCKER_USER}/${svc}:${version}"
+
+                            // Remove stale PID if Squid
+                            if (svc == 'squid-proxy') {
+                                sh "${envVars} docker run --rm -v $(pwd)/${svc}:/etc/squid busybox sh -c 'rm -f /var/run/squid.pid || true'"
+                            }
+
                             sh "${envVars} docker compose up -d ${svc}"
                         } else {
                             echo "${svc} is already running."
@@ -87,14 +86,12 @@ pipeline {
             }
         }
 
-        // ========================
         // 4. Detect Changes
-        // ========================
         stage('Detect Changes') {
             when { 
                 allOf {
-                    not { triggeredBy 'TimerTrigger' } // Skip on 10-min trigger
-                    not { triggeredBy 'UserIdCause' } // Skip on manual trigger
+                    not { triggeredBy 'TimerTrigger' } // Skip 10-min schedule
+                    not { triggeredBy 'UserIdCause' }  // Skip manual trigger
                 }
             }
             steps {
@@ -120,15 +117,13 @@ pipeline {
             }
         }
 
-        // ========================
         // 5. Deploy Compose Change
-        // ========================
         stage('Deploy Compose Change') {
             when { 
                 allOf {
                     expression { env.COMPOSE_CHANGED == 'true' }
-                    not { triggeredBy 'TimerTrigger' } // Skip 10-min trigger
-                    not { triggeredBy 'UserIdCause' } // Skip manual trigger
+                    not { triggeredBy 'TimerTrigger' }
+                    not { triggeredBy 'UserIdCause' }
                 }
             }
             steps {
@@ -136,14 +131,18 @@ pipeline {
                     def versionMap = readYaml file: "${VERSION_FILE}"
                     def services = ['dhcp-server','dns-server','squid-proxy']
                     def envVars = services.collect { s -> "${s.toUpperCase().replace('-', '_')}_VERSION=${versionMap[s]}" }.join(' ')
+
+                    // Remove stale PID if Squid
+                    if ('squid-proxy' in services) {
+                        sh "${envVars} docker exec squid-proxy rm -f /var/run/squid.pid || true"
+                    }
+
                     sh "${envVars} docker compose down && ${envVars} docker compose up -d"
                 }
             }
         }
 
-        // ========================
         // 6. Restart Version Changed Services
-        // ========================
         stage('Restart Version Changed Services') {
             when { 
                 allOf {
@@ -159,16 +158,19 @@ pipeline {
                     def envVars = services.collect { s -> "${s.toUpperCase().replace('-', '_')}_VERSION=${versionMap[s]}" }.join(' ')
                     for (svc in services) {
                         echo "Restarting ${svc} with version ${versionMap[svc]}"
-                        sh "${envVars} docker pull ${DOCKER_USER}/${svc}:${versionMap[svc]}"
+
+                        // Remove stale PID if Squid
+                        if (svc == 'squid-proxy') {
+                            sh "${envVars} docker exec ${svc} rm -f /var/run/squid.pid || true"
+                        }
+
                         sh "${envVars} docker compose up -d ${svc}"
                     }
                 }
             }
         }
 
-        // ========================
         // 7. Build, Push & Deploy
-        // ========================
         stage('Build, Push & Deploy') {
             when { 
                 allOf {
@@ -192,16 +194,23 @@ pipeline {
                         echo "Building ${svc} image with version ${newVersion}"
                         sh "${envVars} docker build -t ${DOCKER_USER}/${svc}:${newVersion} ./${svc}"
                         sh "${envVars} docker push ${DOCKER_USER}/${svc}:${newVersion}"
+
+                        // Remove stale PID if Squid
+                        if (svc == 'squid-proxy') {
+                            sh "${envVars} docker exec ${svc} rm -f /var/run/squid.pid || true"
+                        }
+
                         sh "${envVars} docker compose up -d ${svc}"
                     }
                 }
             }
         }
 
-        // ========================
         // 8. Periodic Health Check & Auto-Restart
-        // ========================
         stage('Periodic Health Check & Auto-Restart') {
+            when { 
+                not { triggeredBy 'UserIdCause' } // Skip manual GitHub trigger
+            }
             steps {
                 script {
                     def services = ['dhcp-server','dns-server','squid-proxy']
@@ -211,7 +220,6 @@ pipeline {
                     for (svc in services) {
                         echo "Checking health for ${svc}..."
                         def running = sh(script: "${envVars} docker inspect -f '{{.State.Running}}' ${svc}", returnStdout: true).trim()
-
                         def healthy = ''
                         try {
                             healthy = sh(script: "${envVars} docker inspect -f '{{.State.Health.Status}}' ${svc}", returnStdout: true).trim()
@@ -221,6 +229,12 @@ pipeline {
 
                         if (running != 'true' || healthy == 'unhealthy') {
                             echo "${svc} is not healthy! Restarting..."
+
+                            // Remove stale PID if Squid
+                            if (svc == 'squid-proxy') {
+                                sh "${envVars} docker exec ${svc} rm -f /var/run/squid.pid || true"
+                            }
+
                             sh "${envVars} docker compose up -d ${svc}"
                             sleep 15
                             def recheck = sh(script: "${envVars} docker inspect -f '{{.State.Running}}' ${svc}", returnStdout: true).trim()
@@ -237,9 +251,7 @@ pipeline {
             }
         }
 
-        // ========================
         // 9. Health Check & Rollback
-        // ========================
         stage('Health Check & Rollback') {
             when { 
                 not { triggeredBy 'TimerTrigger' } // Skip 10-min trigger
@@ -255,6 +267,12 @@ pipeline {
                         if (state != 'true') {
                             echo "${svc} is not healthy! Rolling back..."
                             def prevVersion = versionMap[svc].toInteger() - 1
+
+                            // Remove stale PID if Squid
+                            if (svc == 'squid-proxy') {
+                                sh "${envVars} docker exec ${svc} rm -f /var/run/squid.pid || true"
+                            }
+
                             sh "${envVars} docker pull ${DOCKER_USER}/${svc}:${prevVersion}"
                             sh "${envVars} docker compose up -d ${svc}"
                             versionMap[svc] = prevVersion

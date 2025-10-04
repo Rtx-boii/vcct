@@ -9,7 +9,6 @@ pipeline {
     }
 
     stages {
-
         stage('Checkout SCM') {
             steps {
                 checkout([$class: 'GitSCM',
@@ -30,45 +29,29 @@ pipeline {
             }
         }
 
-        stage('Generate .env from versions.yml') {
-            steps {
-                script {
-                    def versionMap = readYaml file: "${VERSION_FILE}"
-
-                    // Ensure all services have a valid version
-                    def services = ['dhcp-server','dns-server','squid-proxy']
-                    services.each { svc ->
-                        if (!versionMap[svc] || versionMap[svc].toInteger() < 1) {
-                            versionMap[svc] = 1
-                        }
-                    }
-
-                    // Write back to versions.yml
-                    writeYaml file: "${VERSION_FILE}", data: versionMap
-
-                    // Generate .env file for Docker Compose
-                    writeFile file: '.env', text: """
-DHCP_SERVER_VERSION=${versionMap['dhcp-server']}
-DNS_SERVER_VERSION=${versionMap['dns-server']}
-SQUID_PROXY_VERSION=${versionMap['squid-proxy']}
-"""
-                    echo ".env file generated:"
-                    sh "cat .env"
-                }
-            }
-        }
-
         stage('Initial Compose Status Check') {
             steps {
                 script {
+                    echo "Checking docker-compose services..."
+                    def versionMap = [:]
+                    if (fileExists("${VERSION_FILE}")) {
+                        versionMap = readYaml file: "${VERSION_FILE}"
+                    }
                     def services = ['dhcp-server','dns-server','squid-proxy']
 
                     for (svc in services) {
+                        def version = versionMap[svc]
+                        if (!version || version.toInteger() < 1) {
+                            version = '1'
+                            versionMap[svc] = version
+                            writeYaml file: "${VERSION_FILE}", data: versionMap, overwrite: true
+                        }
+
+                        env."${svc.toUpperCase().replace('-', '_')}_VERSION" = version
+
                         def containerId = sh(script: "docker compose ps -q ${svc}", returnStdout: true).trim()
                         if (!containerId) {
                             echo "${svc} is not running, pulling image and starting..."
-                            def versionMap = readYaml file: "${VERSION_FILE}"
-                            def version = versionMap[svc]
                             sh "docker pull ${DOCKER_USER}/${svc}:${version}"
                             sh "docker compose up -d ${svc}"
                         } else {
@@ -136,7 +119,7 @@ SQUID_PROXY_VERSION=${versionMap['squid-proxy']}
                         // Increment version
                         def version = versionMap[svc].toInteger() + 1
                         versionMap[svc] = version
-                        writeYaml file: "${VERSION_FILE}", data: versionMap
+                        writeYaml file: "${VERSION_FILE}", data: versionMap, overwrite: true
 
                         echo "Building ${svc} image with version ${version}"
                         sh "docker build -t ${DOCKER_USER}/${svc}:${version} ./${svc}"
@@ -151,17 +134,17 @@ SQUID_PROXY_VERSION=${versionMap['squid-proxy']}
             steps {
                 script {
                     def services = ['dhcp-server','dns-server','squid-proxy']
+                    def versionMap = readYaml file: "${VERSION_FILE}"
                     for (svc in services) {
                         sleep 60
                         def state = sh(script: "docker inspect -f '{{.State.Running}}' ${svc}", returnStdout: true).trim()
                         if (state != 'true') {
                             echo "${svc} is not healthy! Rolling back..."
-                            def versionMap = readYaml file: "${VERSION_FILE}"
                             def prevVersion = versionMap[svc].toInteger() - 1
                             sh "docker pull ${DOCKER_USER}/${svc}:${prevVersion}"
                             sh "docker compose up -d ${svc}"
                             versionMap[svc] = prevVersion
-                            writeYaml file: "${VERSION_FILE}", data: versionMap
+                            writeYaml file: "${VERSION_FILE}", data: versionMap, overwrite: true
                         } else {
                             echo "${svc} is healthy."
                         }

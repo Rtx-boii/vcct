@@ -52,7 +52,7 @@ pipeline {
                         writeYaml file: "${VERSION_FILE}", data: versionMap, overwrite: true
 
                         // Export version for Docker Compose
-                        # def envVars = services.collect { s -> "${s.toUpperCase().replace('-', '_')}_VERSION=${versionMap[s]}" }.join(' ')
+                        // def envVars = services.collect { s -> "${s.toUpperCase().replace('-', '_')}_VERSION=${versionMap[s]}" }.join(' ')
                         
                         def containerId = sh(docker compose ps -q ${svc}", returnStdout: true).trim()
                         if (!containerId) {

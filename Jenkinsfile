@@ -1,11 +1,6 @@
 pipeline {
     agent any
 
-    // Scheduled trigger: every 10 minutes
-    triggers {
-        cron('H/10 * * * *')
-    }
-
     environment {
         DOCKER_USER = 'nilessh'
         VERSION_FILE = 'versions.yml'
@@ -14,20 +9,23 @@ pipeline {
     }
 
     stages {
-        stage('Checkout SCM') {
-            when { not { triggeredBy 'TimerTrigger' } }
+        // NEW STAGE to check the commit message first
+        stage('Check Commit Message') {
             steps {
-                echo "Checking out repository..."
-                checkout([
-                    $class: 'GitSCM',
-                    branches: [[name: '*/vcct-setup']],
-                    userRemoteConfigs: [[
-                        url: 'https://github.com/Rtx-boii/vcct.git',
-                        credentialsId: 'github-creds'
-                    ]]
-                ])
+                script {
+                    def commitMessage = sh(script: 'git log -1 --pretty=%B', returnStdout: true).trim()
+                    echo "Commit Message: ${commitMessage}"
+                    if (commitMessage.contains('[skip ci]') || commitMessage.contains('[ci skip]')) {
+                        echo "Skipping build due to commit message."
+                        // Stops the pipeline and marks it as "Not Built"
+                        currentBuild.result = 'NOT_BUILT' 
+                        error("Build skipped due to commit message.")
+                    }
+                }
             }
         }
+        
+        // I HAVE REMOVED THE REDUNDANT 'Checkout SCM' STAGE
 
         stage('Docker Login') {
             steps {
@@ -280,7 +278,6 @@ pipeline {
             }
         }
 
-        // *** THIS STAGE IS NOW CORRECTED ***
         stage('Commit Version Change to GitHub') {
             when { not { triggeredBy 'TimerTrigger' } }
             steps {
@@ -289,15 +286,12 @@ pipeline {
                     if (changes) {
                         echo "versions.yml has changed, committing back to GitHub..."
                         
-                        // CORRECT: Asks for a "Username with password" and provides two variables
                         withCredentials([usernamePassword(credentialsId: 'github-creds', usernameVariable: 'GIT_USER', passwordVariable: 'GIT_TOKEN')]) {
                             sh """
                                 git config --global user.email "jenkins-ci@your-domain.com"
                                 git config --global user.name "Jenkins CI"
                                 git add ${VERSION_FILE}
                                 git commit -m "ci: Update image versions in versions.yml [skip ci]"
-                                
-                                # CORRECT: Uses both the username and the token to push
                                 git push https://${GIT_USER}:${GIT_TOKEN}@github.com/Rtx-boii/vcct.git HEAD:vcct-setup
                             """
                         }

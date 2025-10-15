@@ -7,6 +7,7 @@ RUN mkdir -p /runtime/usr/sbin /runtime/lib64 /runtime/etc/named /runtime/var/na
 
 RUN rndc-confgen -a -c /runtime/etc/rndc.key
 
+
 RUN cp /usr/sbin/named /usr/sbin/rndc /runtime/usr/sbin/
 RUN cp -r /etc/named.conf /runtime/etc/named/
 RUN cp -r /etc/named.* /runtime/etc/named/ || true

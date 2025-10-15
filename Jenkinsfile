@@ -1,6 +1,11 @@
 pipeline {
     agent any
 
+    // ADDED: The triggers block is back, enabling both webhook and cron triggers.
+    triggers {
+        cron('H/10 * * * *')
+    }
+
     environment {
         DOCKER_USER = 'nilessh'
         VERSION_FILE = 'versions.yml'
@@ -9,15 +14,18 @@ pipeline {
     }
 
     stages {
-        // NEW STAGE to check the commit message first
         stage('Check Commit Message') {
+            // ADDED: This 'when' block ensures this stage only runs for Git pushes,
+            // not for the 10-minute scheduled run.
+            when {
+                not { triggeredBy 'TimerTrigger' }
+            }
             steps {
                 script {
                     def commitMessage = sh(script: 'git log -1 --pretty=%B', returnStdout: true).trim()
                     echo "Commit Message: ${commitMessage}"
                     if (commitMessage.contains('[skip ci]') || commitMessage.contains('[ci skip]')) {
                         echo "Skipping build due to commit message."
-                        // Stops the pipeline and marks it as "Not Built"
                         currentBuild.result = 'NOT_BUILT' 
                         error("Build skipped due to commit message.")
                     }
@@ -25,8 +33,6 @@ pipeline {
             }
         }
         
-        // I HAVE REMOVED THE REDUNDANT 'Checkout SCM' STAGE
-
         stage('Docker Login') {
             steps {
                 withCredentials([usernamePassword(credentialsId: 'docker-hub-creds', usernameVariable: 'DOCKER_USER_ENV', passwordVariable: 'DOCKER_PASS_ENV')]) {
@@ -212,7 +218,7 @@ pipeline {
                         def running = sh(script: "${envVars} docker inspect -f '{{.State.Running}}' ${svc}", returnStdout: true).trim()
                         def healthy = ''
                         try {
-                            healthy = sh(script: "${envVars} docker inspect -f '{{.State.Health.Status}}' ${svc}", returnStdout: true).trim()
+                            healthy = sh(script: "docker inspect -f '{{.State.Health.Status}}' ${svc}", returnStdout: true).trim()
                         } catch(Exception e) {
                             healthy = 'unknown'
                         }

@@ -280,34 +280,25 @@ pipeline {
             }
         }
 
-        // *** NEW STAGE ADDED HERE ***
+        // *** THIS STAGE IS NOW CORRECTED ***
         stage('Commit Version Change to GitHub') {
-            // This 'when' block prevents this stage from running on timer triggers
             when { not { triggeredBy 'TimerTrigger' } }
             steps {
                 script {
-                    // Check if the versions.yml file was actually modified
                     def changes = sh(script: "git status --porcelain ${VERSION_FILE}", returnStdout: true).trim()
-
-                    // Only run the git commands if there's something to commit
                     if (changes) {
                         echo "versions.yml has changed, committing back to GitHub..."
                         
-                        // This securely loads your GitHub token from Jenkins credentials
-                        withCredentials([string(credentialsId: 'github-creds', variable: 'GIT_TOKEN')]) {
+                        // CORRECT: Asks for a "Username with password" and provides two variables
+                        withCredentials([usernamePassword(credentialsId: 'github-creds', usernameVariable: 'GIT_USER', passwordVariable: 'GIT_TOKEN')]) {
                             sh """
-                                # 1. Configure Git with a user name and email
                                 git config --global user.email "jenkins-ci@your-domain.com"
                                 git config --global user.name "Jenkins CI"
-
-                                # 2. Add the changed file to the commit
                                 git add ${VERSION_FILE}
-
-                                # 3. Commit the file. The [skip ci] part is VERY important to prevent build loops.
                                 git commit -m "ci: Update image versions in versions.yml [skip ci]"
-
-                                # 4. Push the commit back to your branch on GitHub
-                                git push https://${GIT_TOKEN}@github.com/Rtx-boii/vcct.git HEAD:vcct-setup
+                                
+                                # CORRECT: Uses both the username and the token to push
+                                git push https://${GIT_USER}:${GIT_TOKEN}@github.com/Rtx-boii/vcct.git HEAD:vcct-setup
                             """
                         }
                     } else {

@@ -28,6 +28,7 @@ COPY banned-keywords .
 COPY blocked-filextensions .
 COPY blocked-sites .
 
+
 # Copy the startup script and make it executable
 COPY start-squid.sh /usr/local/bin/start-squid.sh
 RUN chmod +x /usr/local/bin/start-squid.sh

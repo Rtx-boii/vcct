@@ -21,5 +21,6 @@ echo "Setting final permissions..."
 chown -R squid:squid ${CACHE_DIR}
 
 
+
 echo "Setup complete. Starting Squid..."
 exec /usr/sbin/squid -N -d 1

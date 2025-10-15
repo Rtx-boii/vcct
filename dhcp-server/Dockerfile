@@ -3,6 +3,7 @@ FROM rockylinux:9 AS builder
 WORKDIR /build
 
 
+
 RUN dnf install -y dhcp-server && dnf clean all
 RUN mkdir -p /runtime/usr/sbin /runtime/lib64 /runtime/etc/dhcp
 RUN cp /usr/sbin/dhcpd /runtime/usr/sbin/

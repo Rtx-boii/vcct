@@ -1,0 +1,19 @@
+version: "3.9"
+
+  squid-proxy:
+    image: nilessh/squid-proxy:${SQUID_PROXY_VERSION}
+    container_name: squid-proxy
+    ports:
+      - "3128:3128"
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 512M
+    volumes:
+      - ./squid-proxy/logs:/var/log/squid
+      - ./squid-proxy/squid.conf:/etc/squid/squid.conf:ro
+      - ./squid-proxy/banned-keywords:/etc/squid/banned-keywords:ro
+      - ./squid-proxy/blocked-filextensions:/etc/squid/blocked-filextensions:ro
+      - ./squid-proxy/blocked-sites:/etc/squid/blocked-sites:ro
+    restart: unless-stopped

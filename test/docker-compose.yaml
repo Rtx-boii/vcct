@@ -1,5 +1,5 @@
-version: "3.9"
 
+services:
   squid-proxy:
     image: nilessh/squid-proxy:${SQUID_PROXY_VERSION}
     container_name: squid-proxy
